@@ -90,7 +90,15 @@ export function CheckPage({ lang }: { lang: Lang }) {
         <div className="toolbar">
           <label className="field">
             <span>{t(lang, "check_env")}</span>
-            <select className="select" value={envId} onChange={(e) => setEnvId(e.target.value)}>
+            <select
+              className="select"
+              value={envId}
+              onChange={(e) => {
+                setEnvId(e.target.value);
+                setResult(null); // a result belongs to the environment it was checked against
+                setError(null);
+              }}
+            >
               {environments.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.label}

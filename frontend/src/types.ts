@@ -33,6 +33,8 @@ export interface Library {
   name: string;
   version: string;
   source: string;
+  /** Set when the distribution ships several import names (one library each). */
+  import_name?: string | null;
   env_id: string | null;
   status: "pending" | "indexing" | "done" | "partial" | "error" | "superseded";
   entry_count: number;

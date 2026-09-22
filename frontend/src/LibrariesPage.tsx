@@ -225,6 +225,7 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
             <div className="lib-main">
               <span className="lib-name">{lib.name.replace(/^stdlib\//, "")}</span>
               <span className="lib-version">{lib.name.startsWith("stdlib/") ? `stdlib ${lib.version}` : lib.version}</span>
+              {lib.import_name && <span className="text-dim small mono">import {lib.import_name}</span>}
               {lib.note && lib.status === "partial" && <span className="text-dim small">{lib.note}</span>}
             </div>
             <div className="lib-side">

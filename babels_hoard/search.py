@@ -492,7 +492,24 @@ def list_libraries(conn, *, ecosystem: str | None = None, env: str | None = None
         sql += " AND env_id=?"
         params.append(env)
     sql += " ORDER BY ecosystem, name, created_at DESC"
-    return db.dump_all(conn.execute(sql, params).fetchall())
+    rows = db.dump_all(conn.execute(sql, params).fetchall())
+    # A distribution with several import names has one library per name
+    # (pytest: py and pytest): say which one each row is.
+    seen: dict[tuple, int] = {}
+    for row in rows:
+        if row["ecosystem"] == "python":
+            key = (row["name"], row["version"], row.get("env_id"), row["status"])
+            seen[key] = seen.get(key, 0) + 1
+    for row in rows:
+        row["import_name"] = None
+        key = (row["name"], row["version"], row.get("env_id"), row["status"])
+        if row["ecosystem"] == "python" and seen.get(key, 0) > 1:
+            root = conn.execute(
+                "SELECT qualname FROM entries WHERE library_id=? AND parent_id IS NULL AND kind='module' LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            row["import_name"] = root["qualname"] if root else None
+    return rows
 
 
 def read_entry(conn, entry_id: str, offset: int = 0, max_chars: int = 4000) -> dict[str, Any]:

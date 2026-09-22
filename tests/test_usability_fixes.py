@@ -17,6 +17,8 @@ def test_b3_every_import_name_of_a_distribution_gets_its_own_index(conn, builtin
         "SELECT id, status FROM libraries WHERE name='attrs' AND status IN ('done','partial')"
     ).fetchall()
     assert len(rows) == 2
+    listed = {r["import_name"] for r in search.list_libraries(conn, ecosystem="python") if r["name"] == "attrs"}
+    assert listed == {"attr", "attrs"}  # the Libraries screen can tell the two apart
     for qualname in ("attr.s", "attrs.define"):
         found = search.lookup_with_lazy_index(conn, qualname, env=builtin_env["id"])
         assert found["found"], found
