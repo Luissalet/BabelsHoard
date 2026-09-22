@@ -51,6 +51,13 @@ def codes(result):
         "import math, sys, time\nmath.sqrt(2)\nsys.argv\ntime.sleep(0)\n",
         "import tempfile\nwith tempfile.TemporaryDirectory() as d:\n    d.upper()\n",
         "import os.path\nos.path.join('a', 'b')\nos.getcwd()\n",
+        # lazy names listed in __all__ and served by a module __getattr__
+        "from concurrent.futures import ThreadPoolExecutor\nimport concurrent.futures\n"
+        "with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:\n    ex.submit(print, 1)\n",
+        # Python classes shadowed by `from _datetime import *`, attributes set after the class body
+        "import datetime as dt\ndt.timezone.utc\ndt.datetime.min\ndt.datetime.now().isoformat()\n",
+        # enum _convert_(..., __name__) injects the constants into the module
+        "import ssl\nssl.PROTOCOL_TLS_CLIENT\nssl.CERT_NONE\nssl.VerifyMode\n",
     ],
 )
 def test_stdlib_names_hidden_from_static_analysis_are_not_flagged(conn, builtin_env, code):
@@ -169,7 +176,7 @@ print(url.host, url.scheme)
     assert result["checked"] >= 15
 
 
-def test_real_pydantic_and_fastapi_imports(conn, builtin_env):
+def test_real_pydantic_and_fastapi_imports(web_conn, web_env):
     code = """
 from pydantic import BaseModel, Field, ConfigDict
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
@@ -182,9 +189,9 @@ router = APIRouter(prefix="/x")
 app.include_router(router)
 app.add_middleware
 """
-    result = check(conn, builtin_env, code)
+    result = check(web_conn, web_env, code)
     assert result["findings"] == [], result["findings"]
-    moved = check(conn, builtin_env, "from pydantic import BaseSettings\n")
+    moved = check(web_conn, web_env, "from pydantic import BaseSettings\n")
     # moved to pydantic-settings in v2; pydantic resolves unknown names through
     # a module __getattr__, so this is reported but only as a warning.
     assert [(f["severity"], f["code"]) for f in moved["findings"]] == [("warning", "unknown_attribute")]
@@ -192,6 +199,48 @@ app.add_middleware
 
 
 # ------------------------------------------------------------- edgelib --
+def test_names_injected_by_module_level_calls_are_not_flagged(conn, edge_env):
+    code = """
+from edgelib import injected, registered, quiet
+injected.injected
+registered.ALPHA
+quiet.plain()
+quiet.nothing_here
+"""
+    result = check(conn, edge_env, code)
+    assert codes(result) == [(6, "error", "unknown_attribute")], result["findings"]
+
+
+def test_isinstance_narrowing_is_respected(conn, builtin_env):
+    code = """
+import httpx
+
+def handle(t: httpx.BaseTransport, c: httpx.Client) -> None:
+    if isinstance(t, httpx.HTTPTransport):
+        t.anything_on_subclass
+    if not isinstance(c, httpx.Client):
+        return
+    c.anything_after_narrowing
+    assert isinstance(t, httpx.MockTransport)
+    t.handler
+"""
+    assert check(conn, builtin_env, code)["findings"] == []
+
+
+def test_attributes_assigned_after_the_class_body(conn, edge_env):
+    code = """
+import edgelib
+from edgelib import patched
+patched.Color.RED
+patched.Color.BLUE
+patched.Color.GREEN
+patched.Flexible.anything
+patched.Color.PURPLE
+"""
+    result = check(conn, edge_env, code)
+    assert codes(result) == [(7, "warning", "unknown_attribute"), (8, "error", "unknown_attribute")], result["findings"]
+
+
 def test_edgelib_certainty_levels(conn, edge_env):
     code = """
 import edgelib

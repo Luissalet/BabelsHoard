@@ -37,17 +37,14 @@ def test_docs_read_pagination(conn, builtin_env, probe):
         assert second["offset"] == first["next_offset"]
 
 
-def test_search_collapses_re_exports_of_the_same_object(conn, builtin_env, probe):
-    indexing.index_python_library(conn, env=builtin_env, probe=probe, import_name="pydantic")
-    indexing.index_python_library(conn, env=builtin_env, probe=probe, import_name="fastapi")
-    result = search.search(conn, "BaseModel model_dump", limit=10)
+def test_search_collapses_re_exports_of_the_same_object(web_conn):
+    result = search.search(web_conn, "BaseModel model_dump", limit=10)
     names = [h["qualname"] for h in result["results"]]
     assert "pydantic.BaseModel.model_dump" in names
     assert not any(n.startswith("fastapi.") and n.endswith("BaseModel.model_dump") for n in names), names
 
 
-def test_summaries_skip_admonition_markers(conn, builtin_env, probe):
-    indexing.index_python_library(conn, env=builtin_env, probe=probe, import_name="pydantic")
-    row = conn.execute("SELECT summary FROM entries WHERE qualname='pydantic.BaseModel.model_dump'").fetchone()
+def test_summaries_skip_admonition_markers(web_conn):
+    row = web_conn.execute("SELECT summary FROM entries WHERE qualname='pydantic.BaseModel.model_dump'").fetchone()
     assert row["summary"] and not row["summary"].startswith(("!!!", "[")), row["summary"]
     assert "dictionary" in row["summary"].lower()

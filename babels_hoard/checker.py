@@ -568,6 +568,11 @@ class _Checker(ast.NodeVisitor):
 
     # --------------------------------------------------------------- calls
     def visit_Call(self, node: ast.Call) -> None:
+        func_name = node.func.id if isinstance(node.func, ast.Name) else None
+        if func_name in ("isinstance", "issubclass", "type") and node.args and isinstance(node.args[0], ast.Name):
+            # Narrowing: after `isinstance(x, Sub)` (in an if, an early return
+            # or an assert) x may be a subclass with more attributes.
+            self._forget(node.args[0].id)
         self.generic_visit(node)
         callee = self._type_of(node.func)
         if callee is None:

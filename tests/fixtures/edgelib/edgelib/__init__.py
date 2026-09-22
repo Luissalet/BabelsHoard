@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from typing import Self, overload
 
 from ._impl import Engine as Engine
-from . import lazy, magic, starry, compiled_star
+from . import lazy, magic, starry, compiled_star, patched, injected, registered, quiet
 
 __all__ = [
     "Engine", "Point", "Session", "Dynamic", "Settable", "Factory", "Meta", "Decorated",
     "overloaded", "decorated", "renamed", "connect", "fetch", "old_function", "lazy",
-    "magic", "starry", "compiled_star", "Builder", "Opener", "NotSelf", "Callable", "Child",
+    "magic", "starry", "compiled_star", "patched", "injected", "registered", "quiet", "Builder", "Opener", "NotSelf", "Callable", "Child",
 ]
 
 

@@ -511,6 +511,133 @@ def _class_dynamic_cached(cls: Any) -> bool:
     return value
 
 
+def _module_class_patches(src: str) -> tuple[dict[str, set[str]], set[str]]:
+    """Attributes attached to module-level classes *after* their body:
+    ``Color.BLUE = 2`` or ``setattr(Color, "GREEN", 3)`` (how ``datetime``
+    adds ``timezone.utc``). Returns ({class: attrs}, classes patched with a
+    computed name)."""
+    tree = _parse(src)
+    if tree is None:
+        return {}, set()
+    attrs: dict[str, set[str]] = {}
+    dynamic: set[str] = set()
+
+    def statements(body: list[ast.stmt]):
+        for st in body:
+            yield st
+            if isinstance(st, (ast.If, ast.For, ast.While, ast.With)):
+                yield from statements(st.body)
+                yield from statements(getattr(st, "orelse", []) or [])
+            elif isinstance(st, ast.Try):
+                yield from statements(st.body)
+                for h in st.handlers:
+                    yield from statements(h.body)
+                yield from statements(st.orelse)
+                yield from statements(st.finalbody)
+
+    for st in statements(tree.body):
+        targets: list[ast.expr] = []
+        if isinstance(st, ast.Assign):
+            targets = list(st.targets)
+        elif isinstance(st, (ast.AnnAssign, ast.AugAssign)):
+            targets = [st.target]
+        for t in targets:
+            if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and not t.attr.startswith("_"):
+                attrs.setdefault(t.value.id, set()).add(t.attr)
+        if isinstance(st, ast.Expr) and _is_call_to(st.value, {"setattr"}):
+            call = st.value
+            if call.args and isinstance(call.args[0], ast.Name):
+                owner = call.args[0].id
+                if len(call.args) > 1 and isinstance(call.args[1], ast.Constant) and isinstance(call.args[1].value, str):
+                    if not call.args[1].value.startswith("_"):
+                        attrs.setdefault(owner, set()).add(call.args[1].value)
+                else:
+                    dynamic.add(owner)
+    return attrs, dynamic
+
+
+_BENIGN_NAME_CALLS = {"getLogger", "get_logger", "getChild", "Logger", "LoggerAdapter", "filterwarnings", "simplefilter", "warn"}
+
+
+def _is_namespace_expr(node: ast.AST, aliases: set[str]) -> bool:
+    """A module's namespace or the module object itself: ``globals()``,
+    ``vars(x)``, ``<frame>.f_globals``, ``<obj>.__dict__``,
+    ``sys.modules[...]``, or a variable bound to one of those."""
+    if isinstance(node, ast.Name):
+        return node.id in aliases
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("globals", "vars"):
+        return True
+    if isinstance(node, ast.Attribute) and node.attr in ("f_globals", "__dict__"):
+        return True
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "modules":
+        return isinstance(node.value.value, ast.Name) and node.value.value.id == "sys"
+    return False
+
+
+def _mutates_namespace(src: str) -> bool:
+    """Does this function *write* names into a module namespace? Reads
+    (``name in sys.modules[m].__dict__``) do not count."""
+    tree = _parse(src)
+    if tree is None:
+        return False
+    aliases: set[str] = set()
+    changed = True
+    while changed:  # propagate `ns = sys.modules[m]`, `g = ns.__dict__`, ...
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id not in aliases and _is_namespace_expr(node.value, aliases):
+                    aliases.add(node.targets[0].id)
+                    changed = True
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
+        for t in targets:
+            if isinstance(t, ast.Subscript) and _is_namespace_expr(t.value, aliases):
+                return True
+            if isinstance(t, ast.Attribute) and _is_namespace_expr(t.value, aliases):
+                return True
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr in ("update", "setdefault") and _is_namespace_expr(f.value, aliases):
+                return True
+            if isinstance(f, ast.Name) and f.id == "setattr" and node.args and _is_namespace_expr(node.args[0], aliases):
+                return True
+    return False
+
+
+def _module_level_calls(src: str) -> list[tuple[str, bool]]:
+    """(dotted callee, passes ``__name__``) for calls made while the module
+    is imported (top level, including top-level if/try/for/with blocks;
+    not inside functions or classes)."""
+    tree = _parse(src)
+    if tree is None:
+        return []
+    out: list[tuple[str, bool]] = []
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Call):
+                parts = []
+                f = child.func
+                while isinstance(f, ast.Attribute):
+                    parts.append(f.attr)
+                    f = f.value
+                if isinstance(f, ast.Name):
+                    parts.append(f.id)
+                    dotted = ".".join(reversed(parts))
+                    args = [*child.args, *(k.value for k in child.keywords)]
+                    passes_name = any(isinstance(a, ast.Name) and a.id == "__name__" for a in args)
+                    out.append((dotted, passes_name))
+            walk(child)
+
+    walk(tree)
+    return out
+
+
 def _class_source_dynamic(src: str) -> bool:
     """True when a class body can create attributes by name at runtime:
     ``setattr(self, <expr>, ...)`` or ``self.__dict__.update/[...]=`` in a
@@ -557,6 +684,17 @@ class _Analyzer:
         self.loader = loader
         self._module: dict[str, Any] = {}
         self._class: dict[str, dict[str, Any]] = {}
+        # modules whose definitions may be replaced at import time by a
+        # star-import from code we cannot read (pure-Python fallback, then
+        # `from _accelerated import *`, as datetime does)
+        self.shadowing: set[str] = set()
+        self._patches: dict[str, tuple[dict[str, set[str]], set[str]]] = {}
+
+    def patches(self, mod: Any) -> tuple[dict[str, set[str]], set[str]]:
+        key = getattr(mod, "path", "")
+        if key not in self._patches:
+            self._patches[key] = _module_class_patches(_source_of(mod))
+        return self._patches[key]
 
     # modules --------------------------------------------------------
     def module_dyn(self, mod: Any, _stack: tuple = ()) -> Any:
@@ -570,6 +708,7 @@ class _Analyzer:
         members = getattr(mod, "members", {}) or {}
         if any("*" in name for name in members):  # griffe keeps unexpandable star-imports as "<mod>/*"
             dyn = 1
+            self.shadowing.add(path)
         dynamic_src, stars = _module_source_facts(_source_of(mod)) if not dyn else (False, [])
         if dynamic_src:
             dyn = 1
@@ -582,14 +721,49 @@ class _Analyzer:
                     target = target.final_target if getattr(target, "is_alias", False) else target
                 except Exception:
                     dyn = 1  # star-import from something we cannot see (compiled / not loaded)
+                    self.shadowing.add(path)
                     break
                 if self.module_dyn(target, _stack + (path,)) == 1:
                     dyn = 1
+                    if getattr(target, "path", None) in self.shadowing:
+                        self.shadowing.add(path)
                     break
+        if not dyn and self._import_time_injection(mod):
+            dyn = 1
         if not dyn and "__getattr__" in members:
             dyn = "soft"
         self._module[path] = dyn
         return dyn
+
+    def _import_time_injection(self, mod: Any) -> bool:
+        """Does importing this module run code that adds names to it?
+
+        Two signals: a module-level call that is handed ``__name__`` (enum's
+        ``_convert_(..., __name__, ...)`` in ``ssl``, registration helpers),
+        and a module-level call to a function whose own source reaches into
+        ``sys.modules``/frames/globals (lazy importers such as anyio's)."""
+        members = getattr(mod, "members", {}) or {}
+        for dotted, passes_name in _module_level_calls(_source_of(mod)):
+            last = dotted.rsplit(".", 1)[-1]
+            target = None
+            head, _, rest = dotted.partition(".")
+            member = members.get(head)
+            if member is not None:
+                try:
+                    target = member.final_target if getattr(member, "is_alias", False) else member
+                    for part in [p for p in rest.split(".") if p]:
+                        target = target.members[part]
+                        target = target.final_target if getattr(target, "is_alias", False) else target
+                except Exception:
+                    target = None
+            if target is not None and _kind_of(target) == "function":
+                # We can read the callee: trust what its source does.
+                if _mutates_namespace(_source_of(target)):
+                    return True
+                continue
+            if passes_name and last not in _BENIGN_NAME_CALLS:
+                return True  # unreadable callee handed the module's name
+        return False
 
     # classes --------------------------------------------------------
     def class_meta(self, cls: Any) -> dict[str, Any]:
@@ -643,6 +817,14 @@ class _Analyzer:
                     ctor = False
             if _class_dynamic_cached(c):
                 getattr_only = True  # setattr(self, <computed name>, ...) - may or may not add names
+        parent = getattr(cls, "parent", None)
+        if parent is not None and _kind_of(parent) == "module":
+            self.module_dyn(parent)
+            if parent.path in self.shadowing:
+                dyn = True  # the class we read may not be the one Python ends up using
+                ctor = False
+            if cls.name in self.patches(parent)[1]:
+                getattr_only = True  # setattr(Cls, <computed name>, ...) at module level
         if dyn:
             meta["dyn"] = 1
         elif getattr_only:
@@ -946,7 +1128,37 @@ class _Walker:
                 else:
                     self.homes[resolved.path] = child_q
                     queue.append((resolved, child_q, depth + 1))
+        if parent_kind == "module":
+            exports = getattr(obj, "exports", None) or []
+            try:
+                export_names = [str(e) for e in exports]
+            except Exception:
+                export_names = []
+            for name in export_names:
+                if not name.isidentifier() or name in seen_names or f"{qual}.{name}" in self.rows:
+                    continue
+                if len(self.rows) >= self.cap:
+                    break
+                # listed in __all__ but not defined statically (a lazy
+                # __getattr__ provides it): it exists, nothing more is known
+                self._add(
+                    f"{qual}.{name}", name, "attribute", None, qual, {"nx": 1, "lazy": 1},
+                    signature=f"{name} (provided at import time)",
+                    summary="Listed in __all__ but created dynamically (module __getattr__ or runtime code); Babel cannot read its definition.",
+                    target=f"{obj.path}.{name}",
+                )
         if parent_kind == "class":
+            owner = getattr(obj, "parent", None)
+            if owner is not None and _kind_of(owner) == "module":
+                for attr in sorted(self.analyzer.patches(owner)[0].get(obj.name, ())):
+                    if attr in seen_names or f"{qual}.{attr}" in self.rows:
+                        continue
+                    seen_names.add(attr)
+                    self._add(
+                        f"{qual}.{attr}", attr, "attribute", None, qual, {},
+                        signature=attr, summary="Class attribute assigned after the class body.",
+                        target=f"{obj.path}.{attr}",
+                    )
             for attr in _extra_instance_attributes(obj):
                 if attr in seen_names or f"{qual}.{attr}" in self.rows:
                     continue
