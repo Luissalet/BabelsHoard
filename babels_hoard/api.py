@@ -15,7 +15,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, checker, db, deps, docsets, environments, indexing, jobs, markdown_index, node_indexing, search
+from . import __version__, backend, checker, db, deps, docsets, environments, indexing, jobs, markdown_index, node_indexing, search
+from .hoard_link import Link
 
 SERVICE = "babels-hoard"
 DISPLAY_NAME = "Babel's Hoard"
@@ -173,7 +174,30 @@ class IndexLibraryArgs(BaseModel):
     force: bool = False
 
 
-def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> FastAPI:
+class BackendConfigArgs(BaseModel):
+    """A subset of ``backend.json``; unknown/omitted keys are left as-is."""
+
+    only_resident: bool | None = None
+    faustus: dict[str, Any] | None = None
+    comfy: dict[str, Any] | None = None
+    capabilities: dict[str, Any] | None = None
+
+
+class AskArgs(BaseModel):
+    question: str
+    library: str | None = None
+    ecosystem: str | None = None
+    kind: str | None = None
+    env: str | None = None
+
+
+def create_app(
+    data_dir: Path,
+    static_dir: Path | None,
+    port: int = 8811,
+    link: Link | None = None,
+    link_factory: Callable[[], Link] | None = None,
+) -> FastAPI:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     database = db.Database(data_dir / "babel.db")
@@ -182,8 +206,9 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     environments.builtin_env_id(database.conn())
 
     @contextlib.asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(app: FastAPI):
         yield
+        await app.state.link.aclose()
         database.close_all()
 
     app = FastAPI(title=DISPLAY_NAME, version=__version__, lifespan=lifespan)
@@ -191,6 +216,15 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     app.state.database = database
     app.state.job_mgr = job_mgr
     app.state.static_dir = static_dir
+    app.state.data_dir = data_dir
+    # `link_factory` builds a fresh Link from current config; a config change
+    # or an explicit re-check calls it again and closes the old one, so probe
+    # caches and explicit overrides never mix between the old and new config.
+    # Tests inject a fake/fixed factory (or just `link`) to stay offline.
+    if link_factory is None:
+        link_factory = (lambda: link) if link is not None else (lambda: backend.build_link(data_dir, app="babel"))
+    app.state.link_factory = link_factory
+    app.state.link = link if link is not None else link_factory()
 
     def C():
         """This thread's own connection (request threads and the job worker
@@ -398,6 +432,53 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
                 raise AgentError("bad_path", str(exc)) from exc
 
         return call_tool("docs_index_folder", args.path, run)
+
+    # ------------------------------------------------------- shared backend
+    # UI-only: Faustus/the shared model backend is a Settings concern, not
+    # something the agent configures about itself.
+    @app.get("/api/backend")
+    async def ui_backend_status():
+        return await backend.backend_status(app.state.link)
+
+    @app.get("/api/backend/config")
+    def ui_backend_config_get():
+        return backend.config_for_ui(data_dir)
+
+    @app.put("/api/backend/config")
+    async def ui_backend_config(args: BackendConfigArgs):
+        patch = {k: v for k, v in args.model_dump(exclude_none=True).items()}
+        backend.save_overrides(data_dir, patch)
+        old_link = app.state.link
+        app.state.link = app.state.link_factory()
+        await old_link.aclose()
+        return {"config": backend.config_for_ui(data_dir), "status": await backend.backend_status(app.state.link)}
+
+    @app.post("/api/backend/recheck")
+    async def ui_backend_recheck():
+        # Probes are cached for 30s inside Link; a fresh Link guarantees this
+        # button always re-probes instead of returning a stale cached miss.
+        old_link = app.state.link
+        app.state.link = app.state.link_factory()
+        await old_link.aclose()
+        return await backend.backend_status(app.state.link)
+
+    @app.post("/api/ask")
+    async def ui_ask(args: AskArgs):
+        """"Ask the docs": not an MCP tool, not recorded as an assistant
+        call - a human using the Search screen, same as /api/search."""
+        try:
+            return await backend.ask_the_docs(
+                C(),
+                app.state.link,
+                question=args.question,
+                search_fn=search.search,
+                library=args.library,
+                ecosystem=args.ecosystem,
+                kind=args.kind,
+                env=args.env,
+            )
+        except environments.ProbeError as exc:
+            raise AgentError("unknown_environment", str(exc), status=404) from exc
 
     # --------------------------------------------------------- UI-only ---
     @app.get("/api/environments")
