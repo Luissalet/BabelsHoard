@@ -19,12 +19,7 @@ export function Sidebar({ view, onChange, lang }: { view: View; onChange: (v: Vi
     <nav className="sidebar" aria-label="Sections">
       <div className="sidebar-brand">
         <div className="sidebar-brand-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 20h16" />
-            <path d="M6 20V9l6-5 6 5v11" />
-            <path d="M10 20v-5h4v5" />
-            <path d="M9 10h6" />
-          </svg>
+          <img src="/app-icon.png" width={28} height={28} alt="" />
         </div>
         <div className="sidebar-brand-text">
           <div className="sidebar-brand-name">{t(lang, "appName")}</div>
