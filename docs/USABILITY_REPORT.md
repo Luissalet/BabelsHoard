@@ -11,8 +11,8 @@ scenario (same data, same scripts, a fresh data folder) are in
 
 ## Test setup
 
-- **Project:** `data-uxtest/faustus-like/` (gitignored), shaped like the
-  project `C:\Projects\myapp`: `.venv` at the root with **228 installed
+- **Project:** `data-uxtest/faustus-like/` (gitignored), shaped like a large
+  real project: `.venv` at the root with **228 installed
   distributions** (fastapi 0.141.1, httpx 0.28.1, pydantic 2.13.5,
   pydantic-settings 2.15.0, SQLAlchemy 2.0.54, fastembed 0.8.1, psutil
   7.2.2, numpy, pandas, chromadb, openai, mcp, alembic, pytest, mypy, ruff,
@@ -20,8 +20,8 @@ scenario (same data, same scripts, a fresh data folder) are in
   `pyproject.toml`, a React 19 `frontend/node_modules` (react, react-dom,
   lucide-react, zustand, @tanstack/react-query, typescript, vite) and a
   `docs/` folder of Markdown.
-- **Reference module:** `backend/app/chat_service.py`, 370 lines in the
-  usual FastAPI style (FastAPI router with `Annotated` dependencies, SQLAlchemy
+- **Reference module:** `backend/app/chat_service.py`, 370 lines in a
+  typical FastAPI service's style (FastAPI router with `Annotated` dependencies, SQLAlchemy
   2.0 async ORM, pydantic v2 + pydantic-settings, httpx streaming client,
   tenacity `AsyncRetrying`, fastembed, psutil, PyJWT, PyYAML,
   sse-starlette). It is known-correct: its own test imports it and drives
@@ -139,8 +139,8 @@ and the presence of a Spanish word. Proposed lines (98-105 characters):
 
 **B5 - False errors on correct code: compiled submodules and namespace
 sub-packages are treated as missing.**
-*UC5 extended (false-positive harness over a large real dependency stack, plus
-hand-written probes).* The README promises an error only when absence is
+*UC5 extended (false-positive harness over a large real dependency stack,
+plus hand-written probes).* The README promises an error only when absence is
 proven, but these correct lines are reported as **errors**:
 
 | Correct code | Reported |
@@ -190,8 +190,8 @@ requests: the first `api_check_code` on the 370-line module took **129 s
 while the job ran versus 78 s alone** (0.09 s once indexed). The process
 reached 1.5-1.6 GB RSS after the job and never returned it (56 MB after a
 restart with the same database); on this 7 GB box one instance was killed
-by the out-of-memory killer. On a developer's machine this competes with a loaded
-27B model.
+by the out-of-memory killer. On a developer's machine this competes with a
+loaded 27B model.
 *Planned:* skip dev-only groups and tool distributions in the eager job,
 let on-demand indexing jump ahead of the job, and run indexing in a child
 process so memory is returned (or at least `gc` + arena trim after each
@@ -356,8 +356,8 @@ The app process stayed at 200-250 MB during and after the dependency job
 New in the second pass, found by the false-positive harness on `_pytest`:
 `logging.LogRecord.message` (assigned by `Formatter.format` on the record,
 declared by no class) was an error; attributes a module assigns on other
-objects are now recorded on its classes. The harness over 110 files of the
-large dependency stack (SQLAlchemy, pydantic-settings, sse-starlette, tenacity,
+objects are now recorded on its classes. The harness over 110 files of a
+large real dependency stack (SQLAlchemy, pydantic-settings, sse-starlette, tenacity,
 fastembed, psutil, chromadb, aiosqlite, alembic, PyJWT, pytest, attrs,
 numpy) now reports 3 errors, all genuine (`chromadb.proto.*_pb2` modules its
 wheel does not ship).

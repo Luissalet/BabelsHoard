@@ -1,11 +1,10 @@
 # Use cases
 
 Concrete scenarios Babel's Hoard is built for, written from the point of view
-of a developer: a senior engineer who builds local AI tools on Windows (a
-FastAPI + React workspace with a large virtual environment, llama.cpp and
-Ollama models). Two
-of them are driven by the assistant (Faustus) over MCP, and one combines
-Babel with Faustus's own file tools.
+of a developer: a senior engineer who runs local AI tools on Windows, working
+from a FastAPI + React workspace with a large virtual environment, llama.cpp
+and Ollama models. Two of them are driven by the assistant (Faustus) over
+MCP, and one combines Babel with Faustus's own file tools.
 
 Each scenario was walked for real (browser and MCP) on synthetic data; the
 results are in [USABILITY_REPORT.md](USABILITY_REPORT.md). The data set is a
