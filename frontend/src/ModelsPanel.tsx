@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Brain, Layers, RefreshCw } from "lucide-react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
 import type { BackendCapability, BackendConfig, BackendStatus } from "./types";
@@ -13,6 +13,9 @@ const CAP_ICON: Record<string, typeof Brain> = {
 function CapabilityRow({ lang, cap }: { lang: Lang; cap: BackendCapability }) {
   const Icon = CAP_ICON[cap.capability] ?? Brain;
   const resolved = cap.state === "resolved";
+  // An explicit override is taken as given (not probed), so it is
+  // "configured", not "connected": the server may not be running yet.
+  const explicit = resolved && cap.details?.source === "explicit";
   return (
     <div className="models-row">
       <div className="models-row-top">
@@ -21,9 +24,9 @@ function CapabilityRow({ lang, cap }: { lang: Lang; cap: BackendCapability }) {
           {cap.capability}
         </span>
         <span className={`badge ${resolved ? "badge-done" : "badge-pending"}`}>
-          {resolved ? t(lang, "models_resolved") : t(lang, "models_unavailable")}
+          {explicit ? t(lang, "models_configured") : resolved ? t(lang, "models_resolved") : t(lang, "models_unavailable")}
         </span>
-        {resolved && cap.provider && <span className="text-dim small mono">{cap.provider}</span>}
+        {resolved && cap.provider && !(explicit && cap.provider === "configured") && <span className="text-dim small mono">{cap.provider}</span>}
         {resolved && cap.model && <span className="text-dim small mono">{cap.model}</span>}
       </div>
       <div className="text-dim small" style={{ marginTop: 4 }}>
@@ -45,6 +48,7 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
   const [embedUrl, setEmbedUrl] = useState("");
   const [embedModel, setEmbedModel] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const load = () => {
     api.backendStatus().then(setStatus).catch(() => {});
@@ -62,28 +66,39 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
 
   const recheck = () => {
     setChecking(true);
-    api.backendRecheck().then(setStatus).finally(() => setChecking(false));
+    api
+      .backendRecheck()
+      .then(setStatus)
+      .catch(() => {})
+      .finally(() => setChecking(false));
   };
 
-  const save = async () => {
-    const patch: Parameters<typeof api.backendConfig>[0] = {
-      capabilities: {
-        llm: { url: llmUrl || undefined, model: llmModel || undefined },
-        embeddings: { url: embedUrl || undefined, model: embedModel || undefined },
-      },
-    };
-    if (faustusUrl || faustusToken) {
-      patch.faustus = {};
-      if (faustusUrl) patch.faustus.url = faustusUrl;
-      if (faustusToken) patch.faustus.token = faustusToken;
+  // An empty field is sent as "" so clearing it removes that override on
+  // the server; the token is only sent when typed (or "" to forget it).
+  const send = async (patch: Parameters<typeof api.backendConfig>[0]) => {
+    setSaveError(null);
+    try {
+      const result = await api.backendConfig(patch);
+      setConfig(result.config);
+      setStatus(result.status);
+      setFaustusToken("");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : String(err));
     }
-    const result = await api.backendConfig(patch);
-    setConfig(result.config);
-    setStatus(result.status);
-    setFaustusToken("");
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
   };
+
+  const save = () =>
+    send({
+      faustus: faustusToken ? { url: faustusUrl.trim(), token: faustusToken } : { url: faustusUrl.trim() },
+      capabilities: {
+        llm: { url: llmUrl.trim(), model: llmModel.trim() },
+        embeddings: { url: embedUrl.trim(), model: embedModel.trim() },
+      },
+    });
+
+  const forgetToken = () => send({ faustus: { token: "" } });
 
   return (
     <div className="card">
@@ -96,6 +111,11 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
       <p className="text-dim small" style={{ marginTop: 0 }}>
         {t(lang, "models_intro")}
       </p>
+      {status?.config_error && (
+        <div className="models-warning small">
+          {t(lang, "models_config_error")} {status.config_error}
+        </div>
+      )}
       <div className="stack-gap" style={{ gap: 10 }}>
         {status?.used.map((capName) => {
           const cap = status.capabilities[capName];
@@ -118,6 +138,13 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
             value={faustusToken}
             onChange={(e) => setFaustusToken(e.target.value)}
           />
+          {config?.faustus.token_set && (
+            <div>
+              <button className="btn btn-ghost btn-small" onClick={forgetToken}>
+                {t(lang, "models_forget_token")}
+              </button>
+            </div>
+          )}
           <div className="text-dim small">llm</div>
           <input className="input" placeholder="http://127.0.0.1:8081/v1/chat/completions" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} />
           <input className="input" placeholder={t(lang, "models_model_placeholder")} value={llmModel} onChange={(e) => setLlmModel(e.target.value)} />
@@ -129,6 +156,7 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
               {saved ? t(lang, "models_saved") : t(lang, "models_save")}
             </button>
           </div>
+          {saveError && <div className="models-warning small">{saveError}</div>}
         </div>
       )}
     </div>

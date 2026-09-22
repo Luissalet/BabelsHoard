@@ -9,9 +9,29 @@ import { InlineMarkdown } from "./Markdown";
 import { Signature } from "./Signature";
 import type { AskResult, Environment, HealthInfo, Library, SearchHit } from "./types";
 
+/** Short label for a citation: the last two parts of the qualname
+ * ("lib-..:httpx.Client.get" -> "Client.get"). */
+function citeLabel(id: string): string {
+  const qualname = id.split(":").pop() ?? id;
+  return qualname.split(".").slice(-2).join(".");
+}
+
 /** Splits an answer on "[id]" citations and renders known ones as buttons
- * that open the cited entry, exactly like clicking a search result. */
-function AnswerText({ text, ids, onOpen }: { text: string; ids: Set<string>; onOpen: (id: string) => void }) {
+ * that open the cited entry, exactly like clicking a search result. An id
+ * the model made up (not one of the excerpts it was given) is shown struck
+ * through, so an unsupported claim is visible as such. The rest goes
+ * through the inline Markdown renderer (models love `code`). */
+function AnswerText({
+  text,
+  ids,
+  onOpen,
+  unknownTitle,
+}: {
+  text: string;
+  ids: Set<string>;
+  onOpen: (id: string) => void;
+  unknownTitle: string;
+}) {
   const parts = text.split(/(\[[^\[\]\s]{1,200}\])/g);
   return (
     <>
@@ -20,11 +40,18 @@ function AnswerText({ text, ids, onOpen }: { text: string; ids: Set<string>; onO
         if (m && ids.has(m[1])) {
           return (
             <button key={i} className="ask-cite" onClick={() => onOpen(m[1])} title={m[1]}>
-              {m[1].split(/[:.]/).pop()}
+              {citeLabel(m[1])}
             </button>
           );
         }
-        return <span key={i}>{part}</span>;
+        if (m && m[1].includes(":")) {
+          return (
+            <span key={i} className="ask-cite ask-cite-unknown" title={`${unknownTitle}: ${m[1]}`}>
+              {citeLabel(m[1])}
+            </span>
+          );
+        }
+        return <InlineMarkdown key={i} text={part} />;
       })}
     </>
   );
@@ -166,6 +193,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
         <div className="stack-gap" style={{ gap: 8, marginBottom: 4 }}>
           <button
             className="btn btn-ghost btn-small"
+            style={{ alignSelf: "flex-start" }}
             onClick={askTheDocs}
             disabled={asking || !!llmReason}
             title={llmReason ?? undefined}
@@ -182,8 +210,9 @@ export function SearchPage({ lang }: { lang: Lang }) {
                   <Sparkles size={12} /> {t(lang, "ask_semantic_on")}
                 </div>
               )}
-              <div>
+              <div className="ask-answer-text">
                 <AnswerText
+                  unknownTitle={t(lang, "ask_cite_unknown")}
                   text={askResult.answer ?? ""}
                   ids={new Set((askResult.entries ?? []).map((e) => e.id))}
                   onOpen={(id) => {
@@ -192,9 +221,27 @@ export function SearchPage({ lang }: { lang: Lang }) {
                   }}
                 />
               </div>
+              {(askResult.cited ?? []).length > 0 && (
+                <div className="ask-sources small">
+                  <span className="text-dim">{t(lang, "ask_sources")}:</span>
+                  {(askResult.cited ?? []).map((id) => {
+                    const e = askResult.entries?.find((x) => x.id === id);
+                    return e ? (
+                      <button
+                        key={id}
+                        className="ask-cite"
+                        title={id}
+                        onClick={() => setSelected({ id: e.id, qualname: e.qualname, kind: e.kind, library: e.library, env_id: envFilter || null })}
+                      >
+                        {e.qualname}
+                      </button>
+                    ) : null;
+                  })}
+                </div>
+              )}
               {askResult.model && (
                 <div className="text-dim small" style={{ marginTop: 8 }}>
-                  {askResult.model}
+                  {t(lang, "ask_answered_by")} {askResult.model}
                 </div>
               )}
             </div>

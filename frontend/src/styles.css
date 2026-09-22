@@ -745,6 +745,32 @@ table.table tr:last-child td {
   line-height: 1.55;
 }
 
+.ask-answer-text {
+  white-space: pre-wrap;
+}
+
+.ask-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ask-cite.ask-cite-unknown {
+  color: var(--text-dim);
+  text-decoration: line-through;
+  cursor: help;
+}
+
+.models-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
 .ask-cite {
   font-family: var(--font-mono);
   font-size: 12px;

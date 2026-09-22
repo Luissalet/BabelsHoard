@@ -169,6 +169,8 @@ export interface BackendCapability {
 export interface BackendStatus {
   used: string[];
   capabilities: Record<string, BackendCapability>;
+  /** Why data/backend.json was ignored (broken by hand), if it was. */
+  config_error?: string | null;
 }
 
 export interface BackendConfig {
