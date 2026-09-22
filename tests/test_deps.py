@@ -23,3 +23,22 @@ def test_direct_dependencies_from_requirements_txt(tmp_path):
     )
     names = deps.direct_dependencies(tmp_path)
     assert names == ["numpy", "requests"]
+
+
+def test_poetry_and_dependency_groups(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.poetry.dependencies]
+python = "^3.11"
+Django = "^5.0"
+requests = { version = "^2.31", extras = ["socks"] }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+
+[dependency-groups]
+lint = ["ruff>=0.5", {include-group = "dev"}]
+""",
+        encoding="utf-8",
+    )
+    assert deps.direct_dependencies(tmp_path) == ["django", "pytest", "requests", "ruff"]

@@ -31,3 +31,10 @@ def test_catalog_filters_by_query_offline_shape():
     # logic shape indirectly is covered by the live network test elsewhere.
     # This test just documents the contract without a network call.
     assert callable(docsets.catalog)
+
+
+def test_html_entities_are_decoded_exactly_once():
+    from babels_hoard.html_to_markdown import html_fragment_to_markdown
+
+    md = html_fragment_to_markdown("<p>Write <code>&amp;lt;</code> to get <code>&lt;</code>.</p><script>x()</script>")
+    assert md == "Write `&lt;` to get `<`."

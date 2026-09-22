@@ -5,7 +5,6 @@ Not a general-purpose renderer — nav/aside/script/style are dropped.
 """
 from __future__ import annotations
 
-from html import unescape
 from html.parser import HTMLParser
 
 _SKIP_TAGS = {"script", "style", "nav", "aside", "svg", "button"}
@@ -106,7 +105,9 @@ def html_fragment_to_markdown(html: str) -> str:
         conv.feed(html)
     except Exception:
         pass
-    text = unescape("".join(conv.out))
+    # convert_charrefs=True already decoded entities once; decoding again
+    # would turn documented entities (``&amp;lt;``) into markup (``<``).
+    text = "".join(conv.out)
     lines = [ln.rstrip() for ln in text.splitlines()]
     # Collapse 3+ blank lines to 1.
     collapsed: list[str] = []

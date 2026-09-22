@@ -39,6 +39,23 @@ def direct_dependencies(project_path: Path) -> list[str]:
                 n = _clean_name(spec)
                 if n:
                     names.add(n)
+        # PEP 735 dependency groups (entries may also be {include-group = ...})
+        for group in (data.get("dependency-groups", {}) or {}).values():
+            for spec in group:
+                if isinstance(spec, str):
+                    n = _clean_name(spec)
+                    if n:
+                        names.add(n)
+        # Poetry: [tool.poetry.dependencies] and [tool.poetry.group.<g>.dependencies]
+        poetry = (data.get("tool", {}) or {}).get("poetry", {}) or {}
+        tables = [poetry.get("dependencies", {}) or {}, poetry.get("dev-dependencies", {}) or {}]
+        tables += [(g or {}).get("dependencies", {}) or {} for g in (poetry.get("group", {}) or {}).values()]
+        for table in tables:
+            for key in table:
+                if key.lower() != "python":
+                    n = _clean_name(key)
+                    if n:
+                        names.add(n)
     for req_file in project_path.glob("requirements*.txt"):
         try:
             for line in req_file.read_text(encoding="utf-8", errors="replace").splitlines():
