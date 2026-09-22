@@ -43,7 +43,7 @@ counted as `unchecked`.
 | Offline docsets | DevDocs catalogue and install (HTML converted to Markdown, split by anchors) as a background job | Needs the network, only when the user or the model asks; converter is small, not a full HTML renderer |
 | Markdown folders | `.md`/`.mdx`/`.rst`/`.txt` split by heading (fenced code aware, rst underlines) | Dependency/VCS/build folders skipped; 2,000 files, 2 MB per file |
 | Assistant audit | Every `/api/agent/*` call (tool, argument summary, duration, result) in "Assistant activity"; the UI uses its own endpoints so only the model's calls appear | Local only |
-| Ask the docs | Search screen: a question is answered from the top search hits (re-ranked by the shared `embeddings` model when one resolves, otherwise lexical order) by the shared `llm` model, with citations `[id]` that link back to the exact entry | Answers only from what is already indexed; a UI feature, not an MCP tool; disabled with the reason shown when no model resolves |
+| Ask the docs | Search screen: a question is answered from the top search hits by the shared `llm` model, with citations `[id]` that link back to the exact entry (and a Sources list; an id the model invented is shown struck through). When the shared `embeddings` model resolves, the top 50 lexical hits are re-ranked hybrid (reciprocal-rank fusion of the lexical and embedding orders, "semantic re-rank on" badge); otherwise lexical order | Answers only from what is already indexed; a UI feature, not an MCP tool; disabled with the reason shown when no model resolves |
 | Shared model backend | Settings -> Models: which server/model is used for `llm`/`embeddings` right now and why, a Re-check button, manual overrides (Faustus URL/token, per-capability URL/model) | Read [Shared models](#shared-models) below |
 | UI | Search, symbol panel, Libraries (installed packages with index status), Check code (line numbers, findings under each line), Docsets, Assistant activity, Settings; light/dark, English/Spanish | Single user, local browser |
 
@@ -55,11 +55,13 @@ backend every Faustus plugin vendors: `llm` to answer, `embeddings` to
 semantically re-rank search hits first (hybrid search) when one is
 available. Resolution order in one line: an explicit override in Settings
 or `backend.json`, then a running Faustus instance's own model registry,
-then a shared server already listening on loopback (llama.cpp, Ollama, an
-OpenAI-compatible server) - **the app works fully
-without any model connected**; "Ask the docs" is simply hidden behind an
-honest reason ("No language model is connected...") and every other
-screen is unaffected.
+then a shared server already listening on loopback (llama.cpp, Ollama, any
+OpenAI-compatible server) - **the app works fully without any model
+connected**; the "Ask the docs" button is simply disabled with an honest
+reason ("No language model is connected...", plus the probe details as a
+tooltip) and every other screen is unaffected. A broken, hand-edited
+`backend.json` never stops the app: it falls back to auto-detection and
+Settings -> Models says why the file was ignored.
 
 ## Connect it to Faustus
 
@@ -137,7 +139,7 @@ Modules, data model and the decisions behind the checker:
 .venv\Scripts\python -m pytest -q
 ```
 
-**121 tests, 50-85 s in a shared 2-CPU container, offline.** They cover: the
+**126 tests, 50-85 s in a shared 2-CPU container, offline.** They cover: the
 browser guard and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
 long tool runs; indexing of real installed packages (httpx, pydantic,
@@ -151,7 +153,8 @@ search, docsets, markdown and JS/TS indexing (needs Node.js); the MCP
 adapter spawned over the **real stdio protocol** against a live app,
 including tool keywords, annotations, id round-trips and error pass-through;
 and the shared model backend (`/api/backend*`, config persistence that never
-leaks the Faustus token, and "Ask the docs" - disabled path, empty query,
+leaks the Faustus token, cleared fields, invalid values rejected before
+they are saved, a broken `backend.json` at startup, and "Ask the docs" - disabled path, empty query,
 no matching entries, citation filtering, hybrid re-rank, and a failed model
 call - all against a fake Link, offline).
 

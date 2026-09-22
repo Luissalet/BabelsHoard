@@ -43,7 +43,7 @@ no puede demostrar se cuenta como `unchecked` (sin verificar).
 | Documentación sin conexión | Catálogo e instalación de DevDocs (HTML convertido a Markdown y dividido por anclas) como tarea en segundo plano | Necesita red, solo cuando lo pide el usuario o el modelo; el conversor es pequeño, no un renderizador HTML completo |
 | Carpetas de Markdown | `.md`/`.mdx`/`.rst`/`.txt` divididos por encabezado (respetando bloques de código y subrayados de rst) | Se omiten carpetas de dependencias, control de versiones y compilación; 2.000 archivos y 2 MB por archivo |
 | Auditoría del asistente | Cada llamada a `/api/agent/*` (herramienta, resumen de argumentos, duración, resultado) en «Actividad del asistente»; la interfaz usa sus propios endpoints, así que solo aparecen las llamadas del modelo | Solo local |
-| Preguntar a la documentación | Pantalla de Búsqueda: una pregunta se responde a partir de los mejores resultados de búsqueda (reordenados por el modelo de `embeddings` compartido cuando resuelve, o por orden léxico si no) con el modelo de `llm` compartido, con citas `[id]` que enlazan a la entrada exacta | Solo responde con lo ya indexado; es una función de la interfaz, no una herramienta MCP; se desactiva mostrando el motivo cuando ningún modelo resuelve |
+| Preguntar a la documentación | Pantalla de Búsqueda: una pregunta se responde a partir de los mejores resultados de búsqueda con el modelo de `llm` compartido, con citas `[id]` que enlazan a la entrada exacta (y una lista de Fuentes; un id inventado por el modelo aparece tachado). Cuando el modelo de `embeddings` compartido resuelve, los 50 mejores resultados léxicos se reordenan de forma híbrida (fusión por rango recíproco del orden léxico y el de embeddings, distintivo «reordenación semántica activa»); si no, orden léxico | Solo responde con lo ya indexado; es una función de la interfaz, no una herramienta MCP; se desactiva mostrando el motivo cuando ningún modelo resuelve |
 | Backend de modelos compartido | Ajustes → Modelos: qué servidor/modelo se usa ahora mismo para `llm`/`embeddings` y por qué, un botón «Comprobar de nuevo», ajustes manuales (URL/token de Faustus, URL/modelo por capacidad) | Ver [Modelos compartidos](#modelos-compartidos) más abajo |
 | Interfaz | Búsqueda, panel de símbolo, Librerías (paquetes instalados con su estado de indexado), Comprobar código (números de línea, avisos bajo cada línea), Docsets, Actividad del asistente y Ajustes; tema claro/oscuro, inglés/español | Un solo usuario, navegador local |
 
@@ -57,11 +57,14 @@ resultados de búsqueda primero (búsqueda híbrida) cuando hay uno
 disponible. Orden de resolución en una línea: un ajuste manual en Ajustes o
 en `backend.json`, luego el propio registro de modelos de una instancia de
 Faustus en marcha, luego un servidor ya escuchando en loopback (llama.cpp,
-Ollama, un servidor compatible con OpenAI) - **la aplicación
-funciona por completo sin ningún modelo conectado**; «Preguntar a la
-documentación» simplemente queda oculta tras un motivo honesto («No hay
-ningún modelo de lenguaje conectado...») y el resto de pantallas no se ven
-afectadas.
+Ollama, cualquier servidor compatible con OpenAI) - **la aplicación
+funciona por completo sin ningún modelo conectado**; el botón «Preguntar a
+la documentación» simplemente queda desactivado con un motivo honesto («No
+hay ningún modelo de lenguaje conectado...», y el detalle de la detección
+como descripción emergente) y el resto de pantallas no se ven afectadas. Un
+`backend.json` roto a mano nunca impide arrancar: la aplicación vuelve a la
+detección automática y Ajustes -> Modelos explica por qué se ignoró el
+archivo.
 
 ## Conectarlo a Faustus
 
@@ -141,7 +144,7 @@ las decisiones detrás del comprobador:
 .venv\Scripts\python -m pytest -q
 ```
 
-**121 tests, entre 50 y 85 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
+**126 tests, entre 50 y 85 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
 protección frente al navegador y el confinamiento de archivos estáticos
 (intentos de salir de la carpeta), la forma de los errores, las conexiones
 por hilo y que `/api/health` responda mientras corre una herramienta larga;
@@ -157,7 +160,9 @@ de JS/TS (requiere Node.js); el adaptador MCP lanzado con el **protocolo
 stdio real** contra la aplicación en marcha, incluidas palabras clave,
 anotaciones, ids que se pueden reutilizar y el paso de errores; y el
 backend de modelos compartido (`/api/backend*`, la persistencia de la
-configuración sin filtrar nunca el token de Faustus, y «Preguntar a la
+configuración sin filtrar nunca el token de Faustus, campos vaciados,
+valores no válidos rechazados antes de guardarse, un `backend.json` roto al
+arrancar, y «Preguntar a la
 documentación» - desactivada, pregunta vacía, sin resultados, filtrado de
 citas, reordenación híbrida y una llamada al modelo fallida - todo contra
 un Link simulado, sin red).

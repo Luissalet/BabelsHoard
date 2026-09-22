@@ -7,7 +7,7 @@ babels_hoard/
   __main__.py        python -m babels_hoard: port check, demo seeding, uvicorn on 127.0.0.1
   api.py             FastAPI app: browser guard, /api/agent/* (audited), UI endpoints, SPA hosting
   mcp_server.py      standalone stdio MCP adapter (stdlib + httpx + mcp only)
-  backend.py         the shared model backend: config.json read/write (token never leaves the
+  backend.py         the shared model backend: backend.json read/write (token never leaves the
                       process), the app's one Link, and "Ask the docs" (search + llm + embeddings)
   hoard_link/        vendored copy of Hoard Link (do not edit; see VENDORED.txt)
   db.py              schema (WAL, FTS5, trigram), in-place migrations, one connection per thread
@@ -186,15 +186,24 @@ test that never touches `/api/backend*` is unaffected). `GET /api/backend`
 reports only the two capabilities this app uses (`llm`, `embeddings`);
 `GET`/`PUT /api/backend/config` read and merge-write `backend.json`,
 replacing the Faustus token with a bare `token_set` boolean on the way out
-so it is never sent back to the browser.
+so it is never sent back to the browser. An empty string in a `PUT`
+removes that key (a cleared form field, or `faustus.token: ""` to forget
+the token); the merged file is written to `backend.json.tmp`, validated
+with `LinkConfig.load` and only then moved over the old one, so an invalid
+value is a 400 `bad_config` that leaves the working file and `Link`
+untouched. If the file on disk is already unusable (hand-edited),
+`build_link` falls back to env + auto-detection and `GET /api/backend`
+carries the loader's sentence as `config_error`.
 
 "Ask the docs" (`backend.ask_the_docs`) is a plain function over a
 `sqlite3.Connection`, a `Link` and `search.search` (no FastAPI import): it
 resolves `llm` first and returns an honest `{available: false, reason}`
 without ever calling the model when nothing resolves; otherwise it takes
 the top 50 FTS hits, and when `embeddings` also resolves, embeds the
-question and each hit's compact text and re-sorts by cosine similarity
-(hybrid search) - a failure here is swallowed and the endpoint falls back
+question and each hit's compact text and re-orders them by reciprocal-rank
+fusion (k = 60) of the lexical rank and the cosine-similarity rank (hybrid
+search: pure cosine let a small embedding model push exact identifier
+matches out of the six excerpts) - a failure here is swallowed and the endpoint falls back
 to lexical order rather than failing the whole answer. The top six entries
 become the model's only context; the answer is asked to cite their ids in
 `[brackets]`, and the response's `cited` list is filtered down to ids that
