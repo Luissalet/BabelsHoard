@@ -68,3 +68,14 @@ def test_unresolvable_alias_recorded_not_skipped(conn, builtin_env, probe):
     indexing.index_stdlib_module(conn, env=builtin_env, probe=probe, module_name="os")
     row = conn.execute("SELECT * FROM entries WHERE qualname='os.path'").fetchone()
     assert row is not None
+
+
+def test_signatures_keep_keyword_only_and_positional_only_markers(conn, builtin_env, probe):
+    indexing.index_python_library(
+        conn, env=builtin_env, probe=probe, import_name="edgelib", dist_name="edgelib", version="1",
+        search_paths=[str(FIXTURES / "edgelib")],
+    )
+    init = conn.execute("SELECT signature FROM entries WHERE qualname='edgelib.Session.__init__'").fetchone()
+    assert init["signature"].startswith("__init__(self, url: str, *, timeout: float = 5.0)")
+    send = conn.execute("SELECT signature FROM entries WHERE qualname='edgelib.Session.send'").fetchone()
+    assert "(self, data: bytes, /, retries: int = 0)" in send["signature"]

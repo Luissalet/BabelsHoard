@@ -699,14 +699,25 @@ def _cap_doc(text: str | None) -> str | None:
 def _signature(name: str, obj: Any, kind: str) -> str:
     if kind in ("function", "method"):
         parts = []
-        for p in getattr(obj, "parameters", None) or []:
-            kind_raw = p.kind.value if hasattr(p.kind, "value") else str(p.kind)
+        params = list(getattr(obj, "parameters", None) or [])
+        kinds = [p.kind.value if hasattr(p.kind, "value") else str(p.kind) for p in params]
+        has_varargs = "variadic positional" in kinds
+        star_done = False
+        for i, p in enumerate(params):
+            kind_raw = kinds[i]
+            if kind_raw == "keyword-only" and not has_varargs and not star_done:
+                parts.append("*")  # bare separator: what follows is keyword-only
+                star_done = True
+            if i > 0 and kinds[i - 1] == "positional-only" and kind_raw != "positional-only":
+                parts.append("/")
             piece = ("*" if kind_raw == "variadic positional" else "**" if kind_raw == "variadic keyword" else "") + p.name
             if p.annotation is not None:
                 piece += f": {_stringify(p.annotation)}"
-            if p.default is not None:
+            if p.default is not None and kind_raw not in ("variadic positional", "variadic keyword"):
                 piece += f" = {_stringify(p.default)}"
             parts.append(piece)
+        if kinds and kinds[-1] == "positional-only":
+            parts.append("/")
         ret = _stringify(getattr(obj, "returns", None))
         prefix = "async " if "async" in (getattr(obj, "labels", set()) or set()) else ""
         return f"{prefix}{name}({', '.join(parts)})" + (f" -> {ret}" if ret else "")
