@@ -4,13 +4,18 @@ Never runs project code — only reads ``.d.ts`` files."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from . import db
-from .indexing import library_id
+from .environments import subprocess_flags
+from .indexing import INDEX_LOCK, library_id
+
+# npm package names: optional @scope/, lowercase-ish, no path tricks.
+_PKG_RE = re.compile(r"^(@[a-z0-9][\w.\-~]*/)?[a-z0-9][\w.\-~]*$", re.I)
 
 PROBE_DIR = Path(__file__).parent / "probes"
 PROBE_SCRIPT = PROBE_DIR / "ts_probe.mjs"
@@ -39,7 +44,10 @@ def ensure_probe_deps(timeout: int = 120) -> None:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        **subprocess_flags(),
     )
     if proc.returncode != 0:
         raise NodeIndexError(f"npm ci failed: {proc.stderr.strip()[:500]}")
@@ -56,7 +64,10 @@ def run_probe(node_modules_dir: Path, package_name: str, timeout: int = 60) -> d
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            **subprocess_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise NodeIndexError(f"probe timed out after {timeout}s") from exc
@@ -68,18 +79,55 @@ def run_probe(node_modules_dir: Path, package_name: str, timeout: int = 60) -> d
         raise NodeIndexError(f"probe returned unparsable output: {exc}") from exc
 
 
+def valid_package_name(name: str) -> bool:
+    return bool(_PKG_RE.match(name)) and ".." not in name
+
+
+def installed_version(node_modules: Path, package_name: str) -> str | None:
+    pkg_json_path = node_modules / package_name / "package.json"
+    if not pkg_json_path.is_file():
+        return None
+    try:
+        return json.loads(pkg_json_path.read_text(encoding="utf-8")).get("version", "0.0.0")
+    except Exception:
+        return "0.0.0"
+
+
+def current_js_library(conn, env: dict[str, Any], package_name: str) -> dict[str, Any] | None:
+    """The index of the version of ``package_name`` installed right now in
+    the environment's node_modules, built on first need. None when the
+    package, its types or Node.js are missing (the checker then stays
+    silent)."""
+    if not env.get("node_modules_path") or not valid_package_name(package_name):
+        return None
+    node_modules = Path(env["node_modules_path"])
+    version = installed_version(node_modules, package_name)
+    if version is None:
+        return None
+    lib_id = library_id("js", package_name, version, f"node_modules:{env['id']}")
+    row = conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone()
+    if row is not None and row["status"] in ("done", "partial", "error"):
+        return db.dump(row)
+    try:
+        return index_js_library(conn, env=env, package_name=package_name)
+    except Exception:  # noqa: BLE001 - no node, no types: stay silent
+        conn.rollback()
+        return None
+
+
 def index_js_library(conn, *, env: dict[str, Any], package_name: str, force: bool = False) -> dict[str, Any]:
+    if not valid_package_name(package_name):
+        raise NodeIndexError(f"not an npm package name: {package_name!r}")
     node_modules = Path(env["node_modules_path"])
     source = f"node_modules:{env['id']}"
+    version = installed_version(node_modules, package_name)
+    if version is None:
+        raise NodeIndexError(f"package not found in {node_modules}: {package_name}")
+    with INDEX_LOCK:
+        return _index_js_locked(conn, env, node_modules, source, package_name, version, force)
 
-    pkg_json_path = node_modules / package_name / "package.json"
-    version = "0.0.0"
-    if pkg_json_path.is_file():
-        try:
-            version = json.loads(pkg_json_path.read_text(encoding="utf-8")).get("version", "0.0.0")
-        except Exception:
-            pass
 
+def _index_js_locked(conn, env, node_modules: Path, source: str, package_name: str, version: str, force: bool) -> dict[str, Any]:
     lib_id = library_id("js", package_name, version, source)
     existing = conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone()
     if existing and existing["status"] in ("done", "partial") and not force:
@@ -98,7 +146,12 @@ def index_js_library(conn, *, env: dict[str, Any], package_name: str, force: boo
     try:
         result = run_probe(node_modules, package_name)
     except NodeIndexError as exc:
-        conn.execute("UPDATE libraries SET status='error', note=? WHERE id=?", (str(exc)[:500], lib_id))
+        # Tooling problem (no Node.js/npm, timeout): nothing is known about
+        # the package, so do not leave a row that looks like an answer.
+        if existing is None:
+            conn.execute("DELETE FROM libraries WHERE id=?", (lib_id,))
+        else:
+            conn.execute("UPDATE libraries SET status='error', note=? WHERE id=?", (str(exc)[:500], lib_id))
         conn.commit()
         raise
 
@@ -107,7 +160,6 @@ def index_js_library(conn, *, env: dict[str, Any], package_name: str, force: boo
         conn.commit()
         raise NodeIndexError(result["error"])
 
-    conn.execute("DELETE FROM entries WHERE library_id=?", (lib_id,))
     rows: list[tuple] = []
     for exp in result.get("exports", []):
         qualname = f"{package_name}.{exp['name']}"
@@ -152,9 +204,10 @@ def index_js_library(conn, *, env: dict[str, Any], package_name: str, force: boo
                     "deprecated" if m.get("deprecated") else None,
                     exp.get("file"),
                     None,
-                    None,
+                    f"{lib_id}:{qualname}",
                 )
             )
+    conn.execute("DELETE FROM entries WHERE library_id=?", (lib_id,))
     conn.executemany(
         """
         INSERT OR REPLACE INTO entries
@@ -168,6 +221,11 @@ def index_js_library(conn, *, env: dict[str, Any], package_name: str, force: boo
     conn.execute(
         "UPDATE libraries SET status=?, entry_count=?, note=?, indexed_at=? WHERE id=?",
         (status, len(rows), f"indexed {len(rows)} entries from {result.get('entry')}", db.now(), lib_id),
+    )
+    conn.execute(
+        "UPDATE libraries SET status='superseded' WHERE ecosystem='js' AND name=? AND source=? AND id != ? "
+        "AND status IN ('done', 'partial')",
+        (package_name, source, lib_id),
     )
     conn.commit()
     return db.dump(conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone())
