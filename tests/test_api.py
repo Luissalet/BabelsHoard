@@ -86,12 +86,19 @@ def test_agent_check_code_flags_bad_call(client):
     client.post("/api/agent/docs_add_environment", json={"path": sys.executable, "index_dependencies": False})
     r = client.post(
         "/api/agent/api_check_code",
-        json={"code": "import os\nos.this_is_fake()\n"},
+        json={"code": "import json\njson.this_is_fake()\n"},
     )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
     assert body["findings"][0]["code"] == "unknown_attribute"
+
+
+def test_agent_check_code_is_silent_on_names_hidden_in_compiled_modules(client):
+    # os re-exports posix/nt with a star import: absence proves nothing.
+    client.post("/api/agent/docs_add_environment", json={"path": sys.executable, "index_dependencies": False})
+    r = client.post("/api/agent/api_check_code", json={"code": "import os\nos.getcwd()\nos.listdir('.')\n"})
+    assert r.json()["findings"] == []
 
 
 def test_agent_docs_read_not_found(client):

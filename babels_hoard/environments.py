@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
-from dataclasses import dataclass
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -47,17 +49,85 @@ def detect_node_modules(project_dir: Path) -> Path | None:
     return None
 
 
-def probe_python(python_exe: Path, timeout: int = 30) -> dict[str, Any]:
-    """Run the stdlib-only probe as a subprocess of ``python_exe``."""
+def subprocess_flags() -> dict[str, Any]:
+    """Keyword arguments for helper subprocesses: on Windows, never flash a
+    console window (the app itself may run without one, e.g. from Faustus)."""
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    return {}
+
+
+def looks_like_python(path: Path) -> bool:
+    """Only executables named like a Python interpreter are ever run, so
+    registering an arbitrary file cannot be used to execute it."""
+    name = path.name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return bool(re.fullmatch(r"python(3(\.\d+)?)?w?", name)) or name == "pypy3" or name == "pypy"
+
+
+_PROBE_CACHE: dict[str, tuple[tuple, dict[str, Any]]] = {}
+_PROBE_LOCK = threading.Lock()
+
+
+def _probe_fingerprint(python_exe: Path, probe: dict[str, Any] | None) -> tuple:
+    """Cheap change detector: the mtimes of the interpreter and of every
+    site-packages folder it reported. Installing, upgrading or removing a
+    distribution adds/removes a ``*.dist-info`` folder there, which bumps
+    the folder's mtime."""
+    parts: list[Any] = []
+    candidates = [python_exe]
+    if probe:
+        for key in ("purelib", "platlib"):
+            if probe.get(key):
+                candidates.append(Path(probe[key]))
+        for entry in probe.get("sys_path") or []:
+            if entry and ("site-packages" in entry or "dist-packages" in entry):
+                candidates.append(Path(entry))
+    seen = set()
+    for c in candidates:
+        key = str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            parts.append((key, c.stat().st_mtime_ns))
+        except OSError:
+            parts.append((key, None))
+    return tuple(parts)
+
+
+def probe_python(python_exe: Path, timeout: int = 30, use_cache: bool = True) -> dict[str, Any]:
+    """Run the stdlib-only probe as a subprocess of ``python_exe``.
+
+    Results are cached per interpreter and reused until its site-packages
+    folders change, so a lookup does not pay for a subprocess each time but
+    still notices a ``pip install --upgrade`` right away."""
+    python_exe = Path(python_exe)
     if not python_exe.is_file():
         raise ProbeError(f"interpreter not found: {python_exe}")
+    if not looks_like_python(python_exe):
+        raise ProbeError(f"not a Python interpreter (expected python/python3/python.exe): {python_exe}")
+    key = str(python_exe)
+    if use_cache:
+        with _PROBE_LOCK:
+            cached = _PROBE_CACHE.get(key)
+        if cached and cached[0] == _probe_fingerprint(python_exe, cached[1]):
+            return cached[1]
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.pop("PYTHONPATH", None)  # probe the interpreter as the project sees it, not our env
     try:
         proc = subprocess.run(
-            [str(python_exe), str(PROBE_PATH)],
+            [str(python_exe), "-X", "utf8", str(PROBE_PATH)],
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=timeout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            **subprocess_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise ProbeError(f"probe timed out after {timeout}s") from exc
@@ -66,9 +136,12 @@ def probe_python(python_exe: Path, timeout: int = 30) -> dict[str, Any]:
     if proc.returncode != 0:
         raise ProbeError(f"probe failed (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
     try:
-        return json.loads(proc.stdout.strip().splitlines()[-1])
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError) as exc:
         raise ProbeError(f"probe returned unparsable output: {exc}") from exc
+    with _PROBE_LOCK:
+        _PROBE_CACHE[key] = (_probe_fingerprint(python_exe, result), result)
+    return result
 
 
 def env_id_for(python_path: str | None, node_modules_path: str | None) -> str:
@@ -96,7 +169,11 @@ def register_environment(
     project_path: Path | None = None
 
     if p.is_file():
-        # Assume it's a python executable.
+        if not looks_like_python(p):
+            raise ProbeError(
+                f"{p} is a file but not a Python interpreter; pass a project folder, "
+                "a python/python.exe path or a node_modules folder"
+            )
         python_path = p
         project_path = p.parent.parent if p.parent.name in ("bin", "Scripts") else p.parent
     elif p.is_dir():
@@ -217,3 +294,61 @@ def resolve_env(conn, env: str | None) -> dict[str, Any]:
         return db.dump(row)
     env_id = builtin_env_id(conn)
     return get_environment(conn, env_id)
+
+
+def compact_env(row: dict[str, Any]) -> dict[str, Any]:
+    """The environment fields a model needs (no timestamps / internals)."""
+    return {
+        "id": row["id"],
+        "label": row["label"],
+        "python": row.get("python_version"),
+        "python_path": row.get("python_path"),
+        "node_modules_path": row.get("node_modules_path"),
+        "builtin": bool(row.get("is_builtin")),
+    }
+
+
+def compact_environments(conn) -> list[dict[str, Any]]:
+    default = resolve_env(conn, None)
+    out = []
+    for row in list_environments(conn):
+        item = compact_env(row)
+        item["default"] = row["id"] == default["id"]
+        out.append(item)
+    return out
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def installed_packages(conn, env_row: dict[str, Any], *, query: str = "", limit: int = 200) -> dict[str, Any]:
+    """Distributions installed in the environment's interpreter, joined with
+    their index status in Babel (for the Libraries page)."""
+    if not env_row.get("python_path"):
+        return {"packages": [], "total": 0, "truncated": False}
+    probe = probe_python(Path(env_row["python_path"]))
+    rows = conn.execute(
+        "SELECT name, version, status, entry_count FROM libraries WHERE env_id=? AND ecosystem='python'",
+        (env_row["id"],),
+    ).fetchall()
+    status_by = {}
+    for r in rows:
+        status_by[(_norm(r["name"]), r["version"])] = (r["status"], r["entry_count"])
+    q = query.strip().lower()
+    items = []
+    for dist in sorted(probe.get("distributions", []), key=lambda d: d["name"].lower()):
+        if q and q not in dist["name"].lower():
+            continue
+        status, count = status_by.get((_norm(dist["name"]), dist["version"]), (None, 0))
+        items.append(
+            {
+                "name": dist["name"],
+                "version": dist["version"],
+                "import_names": [t for t in dist.get("top_level", []) if t and not t.startswith("_")][:5],
+                "status": status or "not_indexed",
+                "entry_count": count,
+            }
+        )
+    limit = max(1, min(limit, 1000))
+    return {"packages": items[:limit], "total": len(items), "truncated": len(items) > limit}

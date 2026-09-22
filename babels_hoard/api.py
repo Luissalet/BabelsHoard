@@ -2,7 +2,7 @@
 and static frontend hosting."""
 from __future__ import annotations
 
-import threading
+import contextlib
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -10,7 +10,7 @@ from typing import Any, Callable
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
@@ -20,7 +20,6 @@ from . import __version__, checker, db, deps, docsets, environments, indexing, j
 SERVICE = "babels-hoard"
 DISPLAY_NAME = "Babel's Hoard"
 
-_STATE_LOCK = threading.RLock()
 
 
 class AgentError(Exception):
@@ -102,6 +101,8 @@ class BrowserGuardMiddleware(BaseHTTPMiddleware):
 class DocsLibrariesArgs(BaseModel):
     ecosystem: str | None = None
     env: str | None = None
+    limit: int = 30
+    offset: int = 0
 
 
 class DocsSearchArgs(BaseModel):
@@ -160,18 +161,26 @@ class IndexLibraryArgs(BaseModel):
 def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> FastAPI:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
-    conn = db.connect(data_dir / "babel.db")
-    job_mgr = jobs.JobManager(conn)
+    database = db.Database(data_dir / "babel.db")
+    job_mgr = jobs.JobManager(database)
     job_mgr.start()
+    environments.builtin_env_id(database.conn())
 
-    with _STATE_LOCK:
-        environments.builtin_env_id(conn)
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        database.close_all()
 
-    app = FastAPI(title=DISPLAY_NAME, version=__version__)
+    app = FastAPI(title=DISPLAY_NAME, version=__version__, lifespan=lifespan)
     app.add_middleware(BrowserGuardMiddleware, port=port)
-    app.state.conn = conn
+    app.state.database = database
     app.state.job_mgr = job_mgr
     app.state.static_dir = static_dir
+
+    def C():
+        """This thread's own connection (request threads and the job worker
+        never share one)."""
+        return database.conn()
 
     @app.exception_handler(AgentError)
     async def _agent_error_handler(_request: Request, exc: AgentError):
@@ -194,34 +203,62 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
         return JSONResponse({"error": code, "message": str(exc.detail)}, status_code=exc.status_code)
 
     def log_call(tool: str, args_summary: str, ok: bool, error: str | None, duration_ms: float) -> None:
-        with _STATE_LOCK:
-            conn.execute(
-                "INSERT INTO agent_calls (ts, tool, args_summary, duration_ms, ok, error) VALUES (?,?,?,?,?,?)",
-                (db.now(), tool, args_summary[:300], duration_ms, int(ok), error),
-            )
-            conn.commit()
+        conn = C()
+        conn.execute(
+            "INSERT INTO agent_calls (ts, tool, args_summary, duration_ms, ok, error) VALUES (?,?,?,?,?,?)",
+            (db.now(), tool, args_summary[:300], round(duration_ms, 1), int(ok), (error or None) and error[:500]),
+        )
+        conn.commit()
 
-    def call_tool(name: str, args_summary: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    def call_tool(name: str, args_summary: str, fn: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
         start = time.monotonic()
+        conn = C()
         try:
-            with _STATE_LOCK:
-                result = fn()
+            result = fn(conn)
             log_call(name, args_summary, True, None, (time.monotonic() - start) * 1000)
             return result
         except AgentError as exc:
+            conn.rollback()
             log_call(name, args_summary, False, exc.message, (time.monotonic() - start) * 1000)
             raise
+        except environments.ProbeError as exc:
+            conn.rollback()
+            log_call(name, args_summary, False, str(exc), (time.monotonic() - start) * 1000)
+            raise AgentError("unknown_environment", str(exc), status=404) from exc
         except Exception as exc:  # noqa: BLE001
+            conn.rollback()
             log_call(name, args_summary, False, str(exc), (time.monotonic() - start) * 1000)
             raise AgentError("internal_error", str(exc)[:300], status=500) from exc
+
+    def dependency_job(env_row: dict[str, Any], names: list[str]) -> str:
+        def work(conn, progress):
+            probe = environments.probe_python(Path(env_row["python_path"]))
+            done = []
+            for i, name in enumerate(names):
+                try:
+                    lib = indexing.index_python_dependency(conn, env=env_row, probe=probe, dist_name=name)
+                    done.append({"name": name, "status": lib["status"] if lib else "not_installed"})
+                except Exception as exc:  # noqa: BLE001
+                    done.append({"name": name, "status": "error", "error": str(exc)[:200]})
+                progress((i + 1) / max(1, len(names)), f"indexed {name} ({i + 1}/{len(names)})")
+            return {"indexed": done}
+
+        return job_mgr.submit("index_dependencies", work, f"{len(names)} dependencies of {env_row['label']}")
+
+    def docset_job(slug: str) -> str:
+        def work(conn, progress):
+            return docsets.install(conn, slug, progress)
+
+        return job_mgr.submit("install_docset", work, f"docset {slug}")
 
     # ------------------------------------------------------------ health --
     @app.get("/api/health")
     def health():
-        with _STATE_LOCK:
-            n_libs = conn.execute("SELECT COUNT(*) c FROM libraries").fetchone()["c"]
-            n_entries = conn.execute("SELECT COUNT(*) c FROM entries").fetchone()["c"]
-            n_envs = conn.execute("SELECT COUNT(*) c FROM environments").fetchone()["c"]
+        conn = C()
+        n_libs = conn.execute("SELECT COUNT(*) c FROM libraries").fetchone()["c"]
+        n_entries = conn.execute("SELECT COUNT(*) c FROM entries").fetchone()["c"]
+        n_envs = conn.execute("SELECT COUNT(*) c FROM environments").fetchone()["c"]
+        running = conn.execute("SELECT COUNT(*) c FROM jobs WHERE status IN ('queued','running')").fetchone()["c"]
         return {
             "service": SERVICE,
             "name": DISPLAY_NAME,
@@ -230,55 +267,49 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
             "libraries": n_libs,
             "entries": n_entries,
             "environments": n_envs,
+            "jobs_running": running,
         }
 
     # ----------------------------------------------------- agent surface --
     @app.post("/api/agent/docs_libraries")
     def agent_docs_libraries(args: DocsLibrariesArgs):
-        return call_tool(
-            "docs_libraries",
-            f"ecosystem={args.ecosystem} env={args.env}",
-            lambda: {
-                "libraries": search.list_libraries(conn, ecosystem=args.ecosystem, env=args.env),
-                "environments": environments.list_environments(conn),
-            },
-        )
+        def run(conn):
+            if args.env:
+                env_row = environments.resolve_env(conn, args.env)
+                env_filter = env_row["id"]
+            else:
+                env_filter = None
+            out = search.libraries_overview(
+                conn, ecosystem=args.ecosystem, env=env_filter, limit=args.limit, offset=args.offset
+            )
+            out["environments"] = environments.compact_environments(conn)
+            out["jobs"] = job_mgr.compact(5)
+            return out
+
+        return call_tool("docs_libraries", f"ecosystem={args.ecosystem} env={args.env}", run)
 
     @app.post("/api/agent/docs_search")
     def agent_docs_search(args: DocsSearchArgs):
-        return call_tool(
-            "docs_search",
-            args.query,
-            lambda: search.search(
-                conn, args.query, library=args.library, ecosystem=args.ecosystem, kind=args.kind, env=args.env, limit=args.limit
-            ),
-        )
+        def run(conn):
+            env_filter = environments.resolve_env(conn, args.env)["id"] if args.env else None
+            return search.search(
+                conn, args.query, library=args.library, ecosystem=args.ecosystem, kind=args.kind, env=env_filter, limit=args.limit
+            )
+
+        return call_tool("docs_search", args.query, run)
 
     @app.post("/api/agent/api_lookup")
     def agent_api_lookup(args: ApiLookupArgs):
-        def run():
-            env_row = environments.resolve_env(conn, args.env) if (args.env or not args.library) else None
-            result = search.api_lookup(conn, args.symbol, env_row=env_row, library=args.library)
-            if not result["found"] and env_row and env_row.get("python_path"):
-                top = args.symbol.split(".")[0]
-                already = conn.execute(
-                    "SELECT 1 FROM libraries WHERE env_id=? AND (name=? OR name=?)",
-                    (env_row["id"], top, f"stdlib/{top}"),
-                ).fetchone()
-                if not already:
-                    try:
-                        probe = environments.probe_python(Path(env_row["python_path"]))
-                        indexing.index_python_import(conn, env=env_row, probe=probe, import_name=top)
-                        result = search.api_lookup(conn, args.symbol, env_row=env_row, library=args.library)
-                    except Exception:
-                        pass
-            return result
+        def run(conn):
+            return search.lookup_with_lazy_index(conn, args.symbol, env=args.env, library=args.library)
 
         return call_tool("api_lookup", args.symbol, run)
 
     @app.post("/api/agent/api_check_code")
     def agent_api_check_code(args: ApiCheckCodeArgs):
-        def run():
+        def run(conn):
+            if args.language not in ("python", "typescript"):
+                raise AgentError("unsupported_language", "language must be 'python' or 'typescript'")
             env_row = environments.resolve_env(conn, args.env)
             return checker.api_check_code(conn, args.code, env_row=env_row, language=args.language)
 
@@ -286,40 +317,39 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
 
     @app.post("/api/agent/docs_read")
     def agent_docs_read(args: DocsReadArgs):
-        return call_tool("docs_read", args.id, lambda: search.read_entry(conn, args.id, args.offset, args.max_chars))
+        return call_tool("docs_read", args.id, lambda conn: search.read_entry(conn, args.id, args.offset, args.max_chars))
 
     @app.post("/api/agent/docs_add_environment")
     def agent_docs_add_environment(args: DocsAddEnvironmentArgs):
-        def run():
+        def run(conn):
             try:
                 env_row = environments.register_environment(conn, args.path)
             except environments.ProbeError as exc:
                 raise AgentError("registration_failed", str(exc)) from exc
-            probe = env_row.pop("probe", None)
+            env_row.pop("probe", None)
             job_id = None
-            if args.index_dependencies and probe:
-                project_path = Path(env_row["project_path"]) if env_row.get("project_path") else None
-                names = deps.direct_dependencies(project_path) if project_path else []
+            names: list[str] = []
+            if args.index_dependencies and env_row.get("python_path") and env_row.get("project_path"):
+                names = deps.direct_dependencies(Path(env_row["project_path"]))
                 if names:
-                    def work(progress):
-                        done = []
-                        for i, name in enumerate(names):
-                            try:
-                                lib = indexing.index_python_library(conn, env=env_row, probe=probe, import_name=name)
-                                done.append({"name": name, "status": lib["status"]})
-                            except Exception as exc:  # noqa: BLE001
-                                done.append({"name": name, "status": "error", "error": str(exc)[:200]})
-                            progress((i + 1) / len(names), f"indexed {name}")
-                        return {"indexed": done}
-
-                    job_id = job_mgr.submit("index_dependencies", work)
-            return {"environment": env_row, "dependency_job_id": job_id}
+                    job_id = dependency_job(env_row, names)
+            return {
+                "environment": environments.compact_env(env_row),
+                "dependency_job_id": job_id,
+                "dependencies": names[:30],
+                "message": (
+                    f"Registered. Indexing {len(names)} direct dependencies in the background; "
+                    "api_lookup/api_check_code also index packages on first use."
+                    if job_id
+                    else "Registered. Packages are indexed on first use by api_lookup/api_check_code."
+                ),
+            }
 
         return call_tool("docs_add_environment", args.path, run)
 
     @app.post("/api/agent/docs_catalog")
     def agent_docs_catalog(args: DocsCatalogArgs):
-        def run():
+        def run(conn):
             try:
                 return docsets.catalog(args.query, args.limit)
             except Exception as exc:  # noqa: BLE001
@@ -329,19 +359,24 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
 
     @app.post("/api/agent/docs_install_docset")
     def agent_docs_install_docset(args: DocsInstallDocsetArgs):
-        def run():
-            try:
-                return docsets.install(conn, args.slug)
-            except ValueError as exc:
-                raise AgentError("unknown_docset", str(exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise AgentError("install_failed", f"could not install {args.slug!r}: {exc}", status=502) from exc
+        def run(conn):
+            slug = args.slug.strip()
+            if not docsets.valid_slug(slug):
+                raise AgentError("unknown_docset", f"{args.slug!r} is not a docset slug; get one from docs_catalog")
+            job_id = docset_job(slug)
+            return {
+                "job_id": job_id,
+                "status": "queued",
+                "slug": slug,
+                "message": "Downloading and indexing in the background (can take a minute for large docsets). "
+                "Call docs_libraries to see the job's progress; the docset is searchable when it shows status done.",
+            }
 
         return call_tool("docs_install_docset", args.slug, run)
 
     @app.post("/api/agent/docs_index_folder")
     def agent_docs_index_folder(args: DocsIndexFolderArgs):
-        def run():
+        def run(conn):
             try:
                 return markdown_index.index_folder(conn, args.path, args.name)
             except ValueError as exc:
@@ -352,73 +387,74 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     # --------------------------------------------------------- UI-only ---
     @app.get("/api/environments")
     def ui_environments():
-        with _STATE_LOCK:
-            return environments.list_environments(conn)
+        return environments.list_environments(C())
+
+    @app.get("/api/environments/{env_id}/packages")
+    def ui_env_packages(env_id: str, q: str = "", limit: int = 200):
+        conn = C()
+        env_row = environments.get_environment(conn, env_id)
+        if env_row is None:
+            raise AgentError("unknown_environment", f"no such environment: {env_id}", status=404)
+        return environments.installed_packages(conn, env_row, query=q, limit=limit)
 
     @app.get("/api/libraries")
     def ui_libraries(ecosystem: str | None = None, env: str | None = None):
-        with _STATE_LOCK:
-            return search.list_libraries(conn, ecosystem=ecosystem, env=env)
+        return search.list_libraries(C(), ecosystem=ecosystem, env=env)
 
     @app.post("/api/libraries/index")
     def ui_index_library(args: IndexLibraryArgs):
-        with _STATE_LOCK:
-            env_row = environments.get_environment(conn, args.env)
-            if env_row is None:
-                raise AgentError("unknown_environment", f"no such environment: {args.env}", status=404)
-            if args.ecosystem == "js":
-                try:
-                    return node_indexing.index_js_library(conn, env=env_row, package_name=args.import_name, force=args.force)
-                except node_indexing.NodeIndexError as exc:
-                    raise AgentError("index_failed", str(exc), status=502) from exc
-            probe = environments.probe_python(Path(env_row["python_path"])) if env_row.get("python_path") else None
-            if probe is None:
-                raise AgentError("no_python", "this environment has no python interpreter", status=400)
+        conn = C()
+        env_row = environments.get_environment(conn, args.env)
+        if env_row is None:
+            raise AgentError("unknown_environment", f"no such environment: {args.env}", status=404)
+        if args.ecosystem == "js":
+            if not env_row.get("node_modules_path"):
+                raise AgentError("no_node_modules", "this environment has no node_modules folder", status=400)
             try:
-                return indexing.index_python_import(conn, env=env_row, probe=probe, import_name=args.import_name, force=args.force)
-            except indexing.IndexError_ as exc:
+                return node_indexing.index_js_library(conn, env=env_row, package_name=args.import_name, force=args.force)
+            except node_indexing.NodeIndexError as exc:
                 raise AgentError("index_failed", str(exc), status=502) from exc
+        if not env_row.get("python_path"):
+            raise AgentError("no_python", "this environment has no python interpreter", status=400)
+        probe = environments.probe_python(Path(env_row["python_path"]))
+        try:
+            return indexing.index_python_import(conn, env=env_row, probe=probe, import_name=args.import_name, force=args.force)
+        except indexing.IndexError_ as exc:
+            raise AgentError("index_failed", str(exc), status=502) from exc
 
     @app.post("/api/environments/{env_id}/index-dependencies")
     def ui_index_dependencies(env_id: str):
-        with _STATE_LOCK:
-            env_row = environments.get_environment(conn, env_id)
-            if env_row is None:
-                raise AgentError("unknown_environment", f"no such environment: {env_id}", status=404)
-            if not env_row.get("python_path"):
-                raise AgentError("no_python", "this environment has no python interpreter", status=400)
-            probe = environments.probe_python(Path(env_row["python_path"]))
-            project_path = Path(env_row["project_path"]) if env_row.get("project_path") else None
-            names = deps.direct_dependencies(project_path) if project_path else []
-
-        def work(progress):
-            done = []
-            for i, name in enumerate(names):
-                try:
-                    lib = indexing.index_python_library(conn, env=env_row, probe=probe, import_name=name)
-                    done.append({"name": name, "status": lib["status"]})
-                except Exception as exc:  # noqa: BLE001
-                    done.append({"name": name, "status": "error", "error": str(exc)[:200]})
-                progress((i + 1) / max(1, len(names)), f"indexed {name}")
-            return {"indexed": done}
-
-        job_id = job_mgr.submit("index_dependencies", work)
-        return {"job_id": job_id, "dependencies": names}
+        conn = C()
+        env_row = environments.get_environment(conn, env_id)
+        if env_row is None:
+            raise AgentError("unknown_environment", f"no such environment: {env_id}", status=404)
+        if not env_row.get("python_path"):
+            raise AgentError("no_python", "this environment has no python interpreter", status=400)
+        project_path = Path(env_row["project_path"]) if env_row.get("project_path") else None
+        names = deps.direct_dependencies(project_path) if project_path else []
+        if not names:
+            raise AgentError(
+                "no_dependencies",
+                "no pyproject.toml or requirements*.txt with dependencies next to this environment",
+                status=400,
+            )
+        return {"job_id": dependency_job(env_row, names), "dependencies": names}
 
     @app.get("/api/search")
     def ui_search(q: str, library: str | None = None, ecosystem: str | None = None, kind: str | None = None, env: str | None = None, limit: int = 8):
-        with _STATE_LOCK:
-            return search.search(conn, q, library=library, ecosystem=ecosystem, kind=kind, env=env, limit=limit)
+        return search.search(C(), q, library=library, ecosystem=ecosystem, kind=kind, env=env, limit=limit)
+
+    @app.get("/api/lookup")
+    def ui_lookup(symbol: str, env: str | None = None, library: str | None = None):
+        return search.lookup_with_lazy_index(C(), symbol, env=env, library=library, doc_chars=20000)
 
     @app.get("/api/entries/{entry_id:path}")
     def ui_read_entry(entry_id: str, offset: int = 0, max_chars: int = 4000):
-        with _STATE_LOCK:
-            return search.read_entry(conn, entry_id, offset, max_chars)
+        return search.read_entry(C(), entry_id, offset, max_chars)
 
     @app.get("/api/docsets")
     def ui_docsets():
-        with _STATE_LOCK:
-            return docsets.list_installed(conn)
+        return docsets.list_installed(C())
 
     @app.get("/api/docsets/catalog")
     def ui_docsets_catalog(q: str = "", limit: int = 20):
@@ -429,56 +465,49 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
 
     @app.post("/api/docsets/install")
     def ui_docsets_install(args: DocsInstallDocsetArgs):
-        def work(progress):
-            return docsets.install(conn, args.slug, progress)
-
-        job_id = job_mgr.submit("install_docset", work)
-        return {"job_id": job_id}
+        if not docsets.valid_slug(args.slug.strip()):
+            raise AgentError("unknown_docset", f"{args.slug!r} is not a docset slug")
+        return {"job_id": docset_job(args.slug.strip())}
 
     @app.post("/api/folders/index")
     def ui_index_folder(args: DocsIndexFolderArgs):
-        with _STATE_LOCK:
-            try:
-                return markdown_index.index_folder(conn, args.path, args.name)
-            except ValueError as exc:
-                raise AgentError("bad_path", str(exc)) from exc
+        try:
+            return markdown_index.index_folder(C(), args.path, args.name)
+        except ValueError as exc:
+            raise AgentError("bad_path", str(exc)) from exc
 
     @app.post("/api/environments/register")
     def ui_register_environment(args: DocsAddEnvironmentArgs):
-        with _STATE_LOCK:
-            try:
-                env_row = environments.register_environment(conn, args.path)
-            except environments.ProbeError as exc:
-                raise AgentError("registration_failed", str(exc)) from exc
-            env_row.pop("probe", None)
-            return env_row
+        try:
+            env_row = environments.register_environment(C(), args.path)
+        except environments.ProbeError as exc:
+            raise AgentError("registration_failed", str(exc)) from exc
+        env_row.pop("probe", None)
+        return env_row
 
     @app.get("/api/jobs")
     def ui_jobs(limit: int = 20):
-        with _STATE_LOCK:
-            return job_mgr.list(limit)
+        return job_mgr.list(max(1, min(limit, 100)))
 
     @app.get("/api/jobs/{job_id}")
     def ui_job(job_id: str):
-        with _STATE_LOCK:
-            job = job_mgr.get(job_id)
-            if job is None:
-                raise AgentError("not_found", f"no such job: {job_id}", status=404)
-            return job
+        job = job_mgr.get(job_id)
+        if job is None:
+            raise AgentError("not_found", f"no such job: {job_id}", status=404)
+        return job
 
     @app.get("/api/agent_calls")
     def ui_agent_calls(limit: int = 50):
-        with _STATE_LOCK:
-            rows = conn.execute(
-                "SELECT * FROM agent_calls ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
-            return db.dump_all(rows)
+        rows = C().execute(
+            "SELECT * FROM agent_calls ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),)
+        ).fetchall()
+        return db.dump_all(rows)
 
     # -------------------------------------------------------- frontend ---
     if static_dir and static_dir.is_dir() and (static_dir / "index.html").is_file():
-        app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
-
         static_root = static_dir.resolve()
+        if (static_root / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=str(static_root / "assets")), name="assets")
 
         @app.get("/{full_path:path}")
         def spa(full_path: str):
