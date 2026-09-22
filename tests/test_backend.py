@@ -207,3 +207,72 @@ def test_create_app_builds_a_real_link_by_default_and_closes_it(tmp_path):
     app = _app(tmp_path)
     with _client(app):
         pass  # lifespan runs on enter/exit; must not raise
+
+
+# ------------------------------------------------- config robustness (UI form)
+def test_backend_config_cleared_field_removes_the_override(tmp_path):
+    """Clearing a URL in Settings sends "" - that must drop the override,
+    not keep the old value (deep merge) or save an empty string."""
+    backend.save_overrides(
+        tmp_path,
+        {"faustus": {"url": "http://127.0.0.1:7005"}, "capabilities": {"llm": {"url": "http://127.0.0.1:8081", "model": "qwen"}}},
+    )
+    link = FakeLink()
+    with _client(_app(tmp_path, link=link, link_factory=factory_of(link))) as c:
+        r = c.put("/api/backend/config", json={"faustus": {"url": ""}, "capabilities": {"llm": {"url": "", "model": "qwen2"}}})
+        assert r.status_code == 200
+        cfg = r.json()["config"]
+        assert "url" not in cfg["faustus"]
+        assert cfg["capabilities"]["llm"] == {"model": "qwen2"}
+    raw = json.loads((tmp_path / "backend.json").read_text(encoding="utf-8"))
+    assert "url" not in raw["capabilities"]["llm"]
+    assert "faustus" not in raw  # nothing left in that section
+
+
+def test_backend_config_invalid_value_is_rejected_and_not_saved(tmp_path):
+    backend.save_overrides(tmp_path, {"capabilities": {"llm": {"url": "http://127.0.0.1:8081"}}})
+    before = (tmp_path / "backend.json").read_text(encoding="utf-8")
+    link = FakeLink()
+    with _client(_app(tmp_path, link=link, link_factory=factory_of(link))) as c:
+        r = c.put("/api/backend/config", json={"capabilities": {"llm": {"command": "piper"}}})
+        assert r.status_code == 400
+        assert r.json()["error"] == "bad_config"
+        assert "command" in r.json()["message"]
+        assert link.closed is False  # the working Link was kept
+    assert (tmp_path / "backend.json").read_text(encoding="utf-8") == before
+    assert not (tmp_path / "backend.json.tmp").exists()
+
+
+def test_broken_backend_json_does_not_stop_the_app(tmp_path):
+    """A hand-edited, broken backend.json: the app still starts (auto-detect
+    only) and the Settings screen is told why the file was ignored."""
+    (tmp_path / "backend.json").write_text("{not json", encoding="utf-8")
+    link = backend.build_link(tmp_path)  # must not raise
+    assert link.config.capability("llm").explicit is False
+    import asyncio
+
+    asyncio.run(link.aclose())
+    fake = FakeLink()
+    with _client(_app(tmp_path, link=fake)) as c:
+        body = c.get("/api/backend").json()
+        assert "not valid JSON" in body["config_error"]
+        # and the form still loads with defaults
+        assert c.get("/api/backend/config").json()["faustus"]["token_set"] is False
+
+
+# ----------------------------------------------------------- hybrid ranking
+def test_fuse_keeps_strong_lexical_hits_and_lifts_semantic_ones():
+    cands = [{"id": f"e{i}"} for i in range(10)]
+    # the embedding model likes e9 best and e0 least
+    sims = [0.1 * i for i in range(10)]
+    order = [c["id"] for c in backend._fuse(cands, sims)]
+    assert sorted(order) == sorted(c["id"] for c in cands)
+    # pure cosine would put e0 last; fusion keeps the lexical winner in the top half
+    assert order.index("e0") < 5
+    assert order.index("e9") < 5
+
+
+def test_fuse_agreeing_signals_keep_the_order():
+    cands = [{"id": f"e{i}"} for i in range(5)]
+    sims = [1.0 - 0.1 * i for i in range(5)]
+    assert [c["id"] for c in backend._fuse(cands, sims)] == ["e0", "e1", "e2", "e3", "e4"]

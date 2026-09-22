@@ -37,9 +37,31 @@ def config_path(data_dir: Path) -> Path:
     return Path(data_dir) / "backend.json"
 
 
+def config_error(data_dir: Path) -> Optional[str]:
+    """Why ``backend.json`` cannot be used, or ``None`` when it is fine.
+
+    A hand-edited file can be broken (bad JSON, a malformed ``command``);
+    the app must still start, so :func:`build_link` falls back to
+    auto-detection and the Settings screen shows this sentence.
+    """
+    try:
+        LinkConfig.load(config_path(data_dir), env={}, app="check")
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def build_link(data_dir: Path, app: str = "babel") -> Link:
-    """Create the app's one :class:`Link`, from ``backend.json`` + env."""
-    return Link(LinkConfig.load(config_path(data_dir), env=os.environ, app=app))
+    """Create the app's one :class:`Link`, from ``backend.json`` + env.
+
+    An unusable ``backend.json`` never stops the app from starting: the
+    Link then uses only the environment and auto-detection.
+    """
+    try:
+        config = LinkConfig.load(config_path(data_dir), env=os.environ, app=app)
+    except ValueError:
+        config = LinkConfig.load(None, env=os.environ, app=app)
+    return Link(config)
 
 
 def _read_raw(data_dir: Path) -> dict[str, Any]:
@@ -63,20 +85,39 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _drop_empty(value: Any) -> Any:
+    """Remove ``""`` values (a cleared form field) and the empty sections
+    they leave behind, so clearing a field really removes the override."""
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for key, item in value.items():
+        item = _drop_empty(item)
+        if item == "" or (isinstance(item, dict) and not item):
+            continue
+        out[key] = item
+    return out
+
+
 def save_overrides(data_dir: Path, patch: dict[str, Any]) -> None:
     """Merge ``patch`` into ``backend.json`` (created if missing).
 
-    A ``faustus.token`` of ``""`` (empty string) removes the stored token
-    rather than saving an empty one, so the Settings form can offer a
-    "forget token" action without a separate endpoint.
+    An empty string removes that key instead of saving it: ``faustus.token``
+    of ``""`` forgets the stored token, a cleared URL/model field removes
+    that override. The merged file is validated with the same loader the
+    Link uses *before* it replaces the old one, so a bad value raises
+    ``ValueError`` and leaves the working configuration untouched.
     """
-    current = _read_raw(data_dir)
-    merged = _deep_merge(current, patch)
-    faustus = merged.get("faustus")
-    if isinstance(faustus, dict) and faustus.get("token") == "":
-        faustus.pop("token", None)
+    merged = _drop_empty(_deep_merge(_read_raw(data_dir), patch))
     path = config_path(data_dir)
-    path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        LinkConfig.load(tmp, env={}, app="check")
+    except ValueError as exc:
+        tmp.unlink()
+        raise ValueError(str(exc).replace(str(tmp), path.name)) from exc
+    os.replace(tmp, path)
 
 
 def config_for_ui(data_dir: Path) -> dict[str, Any]:
@@ -98,12 +139,13 @@ def config_for_ui(data_dir: Path) -> dict[str, Any]:
     }
 
 
-async def backend_status(link: Link) -> dict[str, Any]:
+async def backend_status(link: Link, data_dir: Optional[Path] = None) -> dict[str, Any]:
     full = await link.status()
     return {
         "used": list(USED_CAPABILITIES),
         "capabilities": {cap: full[cap] for cap in USED_CAPABILITIES if cap in full},
         "all_capabilities": full,
+        "config_error": config_error(data_dir) if data_dir is not None else None,
     }
 
 
@@ -122,6 +164,27 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
+
+
+_RRF_K = 60
+
+
+def _fuse(candidates: list[dict[str, Any]], similarities: list[float]) -> list[dict[str, Any]]:
+    """Hybrid order: reciprocal-rank fusion of the lexical (FTS) order and
+    the embedding-similarity order.
+
+    Neither signal alone decides: an exact identifier match that a small
+    embedding model scores poorly still stays near the top, and a hit
+    phrased differently from the question can climb past lexical noise.
+    """
+    by_similarity = sorted(range(len(candidates)), key=lambda i: similarities[i], reverse=True)
+    semantic_rank = {i: rank for rank, i in enumerate(by_similarity)}
+    fused = sorted(
+        range(len(candidates)),
+        key=lambda i: 1.0 / (_RRF_K + i) + 1.0 / (_RRF_K + semantic_rank[i]),
+        reverse=True,
+    )
+    return [candidates[i] for i in fused]
 
 
 def _context_block(hits: list[dict[str, Any]]) -> str:
@@ -190,10 +253,7 @@ async def ask_the_docs(
             texts = [question] + [_candidate_text(h) for h in candidates]
             vectors = await link.embed(texts)
             if len(vectors) == len(texts):
-                q_vec = vectors[0]
-                scored = list(zip(candidates, vectors[1:]))
-                scored.sort(key=lambda pair: _cosine(q_vec, pair[1]), reverse=True)
-                candidates = [c for c, _ in scored]
+                candidates = _fuse(candidates, [_cosine(vectors[0], v) for v in vectors[1:]])
                 semantic_rerank = True
         except Exception:  # noqa: BLE001 - fall back to lexical order silently
             semantic_rerank = False

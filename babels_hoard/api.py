@@ -438,7 +438,7 @@ def create_app(
     # something the agent configures about itself.
     @app.get("/api/backend")
     async def ui_backend_status():
-        return await backend.backend_status(app.state.link)
+        return await backend.backend_status(app.state.link, data_dir)
 
     @app.get("/api/backend/config")
     def ui_backend_config_get():
@@ -447,11 +447,14 @@ def create_app(
     @app.put("/api/backend/config")
     async def ui_backend_config(args: BackendConfigArgs):
         patch = {k: v for k, v in args.model_dump(exclude_none=True).items()}
-        backend.save_overrides(data_dir, patch)
+        try:
+            backend.save_overrides(data_dir, patch)
+        except ValueError as exc:
+            raise AgentError("bad_config", str(exc)) from exc
         old_link = app.state.link
         app.state.link = app.state.link_factory()
         await old_link.aclose()
-        return {"config": backend.config_for_ui(data_dir), "status": await backend.backend_status(app.state.link)}
+        return {"config": backend.config_for_ui(data_dir), "status": await backend.backend_status(app.state.link, data_dir)}
 
     @app.post("/api/backend/recheck")
     async def ui_backend_recheck():
@@ -460,7 +463,7 @@ def create_app(
         old_link = app.state.link
         app.state.link = app.state.link_factory()
         await old_link.aclose()
-        return await backend.backend_status(app.state.link)
+        return await backend.backend_status(app.state.link, data_dir)
 
     @app.post("/api/ask")
     async def ui_ask(args: AskArgs):
