@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
@@ -27,6 +29,24 @@ class AgentError(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+def _confined_file(root: Path, rel: str) -> Path | None:
+    """Return ``root/rel`` only if it is an existing file *inside* ``root``.
+
+    ``rel`` comes straight from the URL (already percent-decoded), so it can
+    hold ``..`` segments, a leading slash or a Windows drive letter; any of
+    those that would leave ``root`` yields ``None`` (the SPA shell is served
+    instead)."""
+    if not rel or "\x00" in rel:
+        return None
+    try:
+        candidate = (root / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _no_index_page(reason: str) -> str:
@@ -156,6 +176,22 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     @app.exception_handler(AgentError)
     async def _agent_error_handler(_request: Request, exc: AgentError):
         return JSONResponse({"error": exc.code, "message": exc.message}, status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(_request: Request, exc: RequestValidationError):
+        problems = []
+        for err in exc.errors()[:5]:
+            loc = ".".join(str(part) for part in err.get("loc", ()) if part != "body")
+            problems.append(f"{loc or 'body'}: {err.get('msg', 'invalid')}")
+        return JSONResponse(
+            {"error": "invalid_arguments", "message": "Invalid arguments - " + "; ".join(problems)},
+            status_code=422,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error_handler(_request: Request, exc: StarletteHTTPException):
+        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "http_error")
+        return JSONResponse({"error": code, "message": str(exc.detail)}, status_code=exc.status_code)
 
     def log_call(tool: str, args_summary: str, ok: bool, error: str | None, duration_ms: float) -> None:
         with _STATE_LOCK:
@@ -442,12 +478,16 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     if static_dir and static_dir.is_dir() and (static_dir / "index.html").is_file():
         app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 
+        static_root = static_dir.resolve()
+
         @app.get("/{full_path:path}")
         def spa(full_path: str):
-            candidate = static_dir / full_path
-            if full_path and candidate.is_file():
+            if full_path.startswith("api/") or full_path == "api":
+                raise AgentError("not_found", f"no such API route: /{full_path}", status=404)
+            candidate = _confined_file(static_root, full_path)
+            if candidate is not None:
                 return FileResponse(candidate)
-            return FileResponse(static_dir / "index.html")
+            return FileResponse(static_root / "index.html")
 
     else:
 
