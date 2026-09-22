@@ -55,7 +55,7 @@ export const api = {
   environments: () => request<Environment[]>("/api/environments"),
   registerEnvironment: (path: string) => post<Environment>("/api/environments/register", { path }),
   indexDependencies: (envId: string) =>
-    post<{ job_id: string; dependencies: string[] }>(`/api/environments/${envId}/index-dependencies`, {}),
+    post<{ job_id: string; dependencies: string[]; skipped_dev_tools?: string[] }>(`/api/environments/${envId}/index-dependencies`, {}),
   libraries: (params?: { ecosystem?: string; env?: string }) => {
     const qs = new URLSearchParams();
     if (params?.ecosystem) qs.set("ecosystem", params.ecosystem);

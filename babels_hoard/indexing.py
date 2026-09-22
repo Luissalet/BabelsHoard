@@ -43,6 +43,8 @@ when it cannot be sure:
 ``ctor``   calling the class runs the indexed ``__init__`` (no ``__new__``,
            no dynamic metaclass, no signature-changing class decorator).
 ``as``     ``async def``: a call returns a coroutine.
+``cm``     ``@(async)contextmanager`` function: canonical path of the class
+           ``with ... as x`` binds.
 """
 from __future__ import annotations
 
@@ -194,9 +196,12 @@ class _BudgetLoader(griffe.GriffeLoader):
     """A griffe loader that skips test suites and stops parsing new modules
     after a budget, so a giant package cannot take minutes by accident."""
 
-    def __init__(self, *args: Any, budget: int, **kwargs: Any):
+    def __init__(self, *args: Any, budget: int, focus: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.budget = budget
+        # dotted module path that must be parsed even past the budget (the
+        # namespace being indexed on demand) - and every package above it
+        self.focus = focus
         self.loaded_modules = 0
         self.skipped_modules = 0
         self.external_modules = 0
@@ -213,11 +218,17 @@ class _BudgetLoader(griffe.GriffeLoader):
                     continue
                 self.external_modules += 1
             else:
-                if self.loaded_modules >= self.budget:
+                if self.loaded_modules >= self.budget and not self._in_focus(module, subparts):
                     self.skipped_modules += 1
                     continue
                 self.loaded_modules += 1
             self._load_submodule(module, subparts, subpath)
+
+    def _in_focus(self, module: Any, subparts: Any) -> bool:
+        if not self.focus:
+            return False
+        full = ".".join([getattr(module, "path", ""), *[str(p) for p in subparts]]).strip(".")
+        return full == self.focus or full.startswith(self.focus + ".") or self.focus.startswith(full + ".")
 
     def ensure_package(self, name: str) -> bool:
         """Load another top-level package into the same collection (to
@@ -362,10 +373,26 @@ def _docstring_param_notes(obj: Any) -> tuple[str | None, dict[str, str], str | 
     return result
 
 
+_DEPRECATED_DECORATORS = {"typing_extensions.deprecated", "warnings.deprecated", "deprecated.deprecated", "deprecated.classic.deprecated"}
+
+
 def _deprecation_of(obj: Any) -> tuple[bool, str | None]:
     dep = getattr(obj, "deprecated", None)
     if dep:
         return True, getattr(dep, "message", None) or (dep if isinstance(dep, str) else None) or "deprecated"
+    # PEP 702 ``@deprecated("use model_dump")`` (pydantic 2's BaseModel.dict,
+    # .json, .parse_obj...), which griffe leaves as a plain decorator.
+    for d in getattr(obj, "decorators", None) or []:
+        expr = d.value
+        func = getattr(expr, "function", None)
+        path = _canonical(func if func is not None else expr) or ""
+        if path in _DEPRECATED_DECORATORS or path == "deprecated":
+            message = None
+            for arg in getattr(expr, "arguments", None) or []:
+                if isinstance(arg, str) and arg[:1] in ("'", '"'):
+                    message = arg.strip("'\"")
+                    break
+            return True, message or "deprecated"
     return False, None
 
 
@@ -440,6 +467,9 @@ def _function_meta(func: Any, parent_kind: str | None) -> dict[str, Any]:
         if takes_kwargs:
             meta["ovk"] = 1
     ret = getattr(func, "returns", None)
+    cm = _context_manager_yield(func, decorators, ret)
+    if cm:
+        meta["cm"] = cm
     if ret is not None and type(ret).__name__ in ("ExprName", "ExprAttribute"):
         path = _canonical(ret)
         if path in _SELF_TYPES:
@@ -452,6 +482,34 @@ def _function_meta(func: Any, parent_kind: str | None) -> dict[str, Any]:
     elif ret is None and func.name in ("__enter__", "__aenter__") and _returns_self_by_source(func):
         meta["rself"] = 1
     return meta
+
+
+_ITERATOR_TYPES = {
+    "Iterator", "AsyncIterator", "Generator", "AsyncGenerator", "Iterable", "AsyncIterable",
+}
+
+
+def _context_manager_yield(func: Any, decorators: list[str], ret: Any) -> str | None:
+    """``@(async)contextmanager def f(...) -> (Async)Iterator[T]``: what
+    ``with f(...) as x`` binds (``T``), e.g. ``httpx.AsyncClient.stream``
+    yields ``httpx.Response``. None when it cannot be told statically."""
+    if not any(d.rsplit(".", 1)[-1] in ("contextmanager", "asynccontextmanager") for d in decorators):
+        return None
+    if ret is None or type(ret).__name__ != "ExprSubscript":
+        return None
+    left = (_canonical(getattr(ret, "left", None)) or "").rsplit(".", 1)[-1]
+    if left not in _ITERATOR_TYPES:
+        return None
+    first = getattr(ret, "slice", None)
+    if type(first).__name__ == "ExprTuple":
+        elements = getattr(first, "elements", None) or []
+        first = elements[0] if elements else None
+    if type(first).__name__ not in ("ExprName", "ExprAttribute"):
+        return None
+    path = _canonical(first)
+    if not path or "." not in path or path.startswith(("builtins.", "typing.", "typing_extensions.", "collections.abc.")):
+        return None
+    return path
 
 
 _RESTORE_METHODS = {"__setstate__", "__setattr__", "__copy__", "__deepcopy__", "__reduce__", "__reduce_ex__", "__getattr__"}
@@ -1118,12 +1176,34 @@ class _Walker:
         except Exception:
             return False
 
-    def run(self, root: Any, root_q: str) -> None:
-        fields, meta = self._describe(root_q, root, "module", None)
-        dyn = self.analyzer.module_dyn(root)
-        if dyn:
-            meta["dyn"] = dyn
-        self._add(root_q, root_q.rsplit(".", 1)[-1], "module", root, None, meta, **fields)
+    def _class_details(self, cls: Any, fields: dict[str, Any], meta: dict[str, Any]) -> None:
+        """Completeness facts and constructor parameters of a class."""
+        meta.update(self.analyzer.class_meta(cls))
+        init = None
+        try:
+            init = (getattr(cls, "members", {}) or {}).get("__init__") or self._inherited(cls).get("__init__")
+            init = init.final_target if getattr(init, "is_alias", False) else init
+        except Exception:
+            init = None
+        if init is not None and _kind_of(init) == "function":
+            params = _param_list(getattr(init, "parameters", None), _docstring_param_notes(init)[1])
+            if params and params[0]["name"] in ("self", "cls"):
+                params = params[1:]
+            fields["params_json"] = db.to_json(params) if params else None
+
+    def run(self, root: Any, root_q: str, parent_q: str | None = None) -> None:
+        """Walk breadth-first from ``root`` (a module, or a class when a
+        namespace the eager pass left unexpanded is indexed on demand)."""
+        kind = "class" if _kind_of(root) == "class" else "module"
+        name = root_q.rsplit(".", 1)[-1]
+        fields, meta = self._describe(name if kind == "class" else root_q, root, kind, None)
+        if kind == "module":
+            dyn = self.analyzer.module_dyn(root)
+            if dyn:
+                meta["dyn"] = dyn
+        else:
+            self._class_details(root, fields, meta)
+        self._add(root_q, name, kind, root, parent_q, meta, **fields)
         self.homes[root.path] = root_q
         queue: deque[tuple[Any, str, int]] = deque([(root, root_q, 1)])
         while queue:
@@ -1180,18 +1260,7 @@ class _Walker:
                     meta["compiled"] = 1
                     fields["summary"] = fields["summary"] or "compiled, no stubs"
             elif kind == "class":
-                meta.update(self.analyzer.class_meta(resolved))
-                init = None
-                try:
-                    init = (getattr(resolved, "members", {}) or {}).get("__init__") or self._inherited(resolved).get("__init__")
-                    init = init.final_target if getattr(init, "is_alias", False) else init
-                except Exception:
-                    init = None
-                if init is not None and _kind_of(init) == "function":
-                    params = _param_list(getattr(init, "parameters", None), _docstring_param_notes(init)[1])
-                    if params and params[0]["name"] in ("self", "cls"):
-                        params = params[1:]
-                    fields["params_json"] = db.to_json(params) if params else None
+                self._class_details(resolved, fields, meta)
             row = self._add(child_q, name, kind, resolved, qual, meta, **fields)
             if kind in ("module", "class"):
                 home = self.homes.get(resolved.path)
@@ -1325,7 +1394,7 @@ def _compiled_module_file(search_paths: list[str], name: str) -> Path | None:
     return None
 
 
-def _load_root(paths: list[str], import_name: str) -> tuple[_BudgetLoader, Any]:
+def _load_root(paths: list[str], import_name: str, focus: str | None = None) -> tuple[_BudgetLoader, Any]:
     """Load ``import_name`` with a fresh budgeted loader.
 
     griffe merges ``.pyi`` stubs while loading, and the merge resolves
@@ -1335,7 +1404,9 @@ def _load_root(paths: list[str], import_name: str) -> tuple[_BudgetLoader, Any]:
     preload: list[str] = []
     top = import_name.split(".")[0]
     while True:
-        loader = _BudgetLoader(search_paths=paths, allow_inspection=False, docstring_parser="google", budget=MODULE_BUDGET)
+        loader = _BudgetLoader(
+            search_paths=paths, allow_inspection=False, docstring_parser="google", budget=MODULE_BUDGET, focus=focus
+        )
         for name in preload:
             loader.ensure_package(name)
         try:
@@ -1435,11 +1506,7 @@ def _stdlib_has(probe: dict[str, Any], name: str) -> bool:
     return (base / f"{name}.py").is_file() or (base / name / "__init__.py").is_file()
 
 
-def index_stdlib_module(conn, *, env: dict[str, Any], probe: dict[str, Any], module_name: str, force: bool = False) -> dict[str, Any]:
-    stdlib = probe.get("stdlib")
-    if not stdlib:
-        raise IndexError_("probe did not report a stdlib path")
-    top = module_name.split(".")[0]
+def _stdlib_paths(stdlib: str) -> list[str]:
     paths = [stdlib]
     dynload = Path(stdlib) / "lib-dynload"
     if dynload.is_dir():
@@ -1447,6 +1514,15 @@ def index_stdlib_module(conn, *, env: dict[str, Any], probe: dict[str, Any], mod
     dlls = Path(stdlib).parent / "DLLs"  # Windows layout
     if dlls.is_dir():
         paths.append(str(dlls))
+    return paths
+
+
+def index_stdlib_module(conn, *, env: dict[str, Any], probe: dict[str, Any], module_name: str, force: bool = False) -> dict[str, Any]:
+    stdlib = probe.get("stdlib")
+    if not stdlib:
+        raise IndexError_("probe did not report a stdlib path")
+    top = module_name.split(".")[0]
+    paths = _stdlib_paths(stdlib)
     return index_python_library(
         conn,
         env=env,
@@ -1532,3 +1608,116 @@ def current_library(conn, env_row: dict[str, Any], top: str) -> dict[str, Any] |
         conn.rollback()
         _MISSING[key] = fingerprint
         return None
+
+
+# ------------------------------------------------------- on-demand expand --
+_EXPAND_ATTEMPTS: set[tuple[str, str, str]] = set()
+
+
+def expandable(entry: dict[str, Any], lib: dict[str, Any] | None) -> bool:
+    """Is ``entry`` a module/class of this package that the capped eager
+    pass recorded but never expanded (``nx``)? Compiled modules, namespace
+    folders, unresolved aliases, lazy names and namespaces that live in
+    another package are not. A namespace cut short mid-way (``trunc``) is
+    not either: re-walking it would re-walk everything below it."""
+    if lib is None or lib.get("ecosystem") != "python" or lib.get("status") not in ("done", "partial"):
+        return False
+    if entry.get("kind") not in ("module", "class"):
+        return False
+    meta = entry.get("_meta")
+    if meta is None:
+        meta = db.from_json(entry.get("meta_json")) or {}
+    if not meta.get("nx"):
+        return False
+    if any(meta.get(k) for k in ("compiled", "ns", "unres", "lazy", "see")):
+        return False
+    top = entry["qualname"].split(".", 1)[0]
+    if (entry.get("target") or entry["qualname"]).split(".", 1)[0] != top:
+        return False
+    return _attempt_key(None, lib, entry) not in _EXPAND_ATTEMPTS
+
+
+def _attempt_key(conn, lib: dict[str, Any], entry: dict[str, Any]) -> tuple[str, str, str]:
+    # the library id is a hash of name/version/source, so the database file
+    # is part of the key (tests and a --data-dir switch use several)
+    return (f"{lib.get('_db', '')}|{lib['id']}", entry["qualname"], lib.get("indexed_at") or "")
+
+
+def expand_on_demand(conn, env_row: dict[str, Any], lib: dict[str, Any], entry: dict[str, Any],
+                     loaders: dict[str, tuple[Any, Any]] | None = None) -> bool:
+    """Index the subtree of one namespace the eager pass left unexpanded
+    because of the size cap (``sqlalchemy.ext.asyncio`` in SQLAlchemy), and
+    merge it into the same library, so the cap bounds the first pass, not
+    what can ever be answered. Returns True when new entries were written.
+
+    ``loaders`` caches the parsed package for the caller's lifetime (one
+    code check may expand several namespaces of the same package)."""
+    from . import environments
+
+    key = _attempt_key(conn, lib, entry)
+    if key in _EXPAND_ATTEMPTS:
+        return False
+    _EXPAND_ATTEMPTS.add(key)
+    qualname = entry["qualname"]
+    top = qualname.split(".", 1)[0]
+    try:
+        probe = environments.probe_python(Path(env_row["python_path"]))
+    except Exception:  # noqa: BLE001
+        return False
+    if str(lib.get("source", "")).startswith("stdlib:"):
+        paths = _stdlib_paths(probe.get("stdlib") or "")
+    else:
+        paths = list(probe.get("sys_path") or [])
+    module_path = entry.get("target") or qualname
+    if entry["kind"] == "class":
+        module_path = module_path.rsplit(".", 1)[0]
+    cache_key = f"{lib['id']}|{module_path}"
+    try:
+        if loaders is not None and lib["id"] in loaders:
+            loader, root = loaders[lib["id"]]
+        else:
+            loader, root = _load_root(paths, top, focus=module_path)
+            if loaders is not None:
+                loaders[lib["id"]] = (loader, root)
+        obj = root
+        for part in qualname.split(".")[1:]:
+            obj = _final(obj.members[part], loader)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("cannot expand %s on demand (%s): %s", qualname, cache_key, exc)
+        return False
+    if _kind_of(obj) not in ("module", "class"):
+        return False
+    with INDEX_LOCK:
+        walker = _Walker(lib["id"], top, loader, MAX_ENTRIES_PER_LIBRARY)
+        # Objects already expanded elsewhere in this library keep their home;
+        # the new paths point at it instead of duplicating its members.
+        for row in conn.execute(
+            "SELECT qualname, target, meta_json FROM entries WHERE library_id=? AND kind IN ('module','class') "
+            "AND target IS NOT NULL",
+            (lib["id"],),
+        ):
+            meta = db.from_json(row["meta_json"]) or {}
+            if not (meta.get("nx") or meta.get("see") or meta.get("trunc")):
+                walker.homes.setdefault(row["target"], row["qualname"])
+        walker.homes.pop(getattr(obj, "path", ""), None)
+        parent_q = qualname.rsplit(".", 1)[0] if "." in qualname else None
+        walker.run(obj, qualname, parent_q)
+        if loader.skipped_modules:
+            for row in walker.rows.values():
+                if row["kind"] == "module":
+                    row["meta"]["trunc"] = 1
+        rows = walker.tuples()
+        if len(rows) <= 1:
+            return False
+        ids = [r[0] for r in rows]
+        for i in range(0, len(ids), 500):
+            chunk = ids[i : i + 500]
+            conn.execute(f"DELETE FROM entries WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+        conn.executemany(_INSERT_SQL, rows)
+        conn.execute(
+            "UPDATE libraries SET entry_count=(SELECT COUNT(*) FROM entries WHERE library_id=?) WHERE id=?",
+            (lib["id"], lib["id"]),
+        )
+        conn.commit()
+    logger.info("expanded %s on demand: %d entries", qualname, len(rows))
+    return True

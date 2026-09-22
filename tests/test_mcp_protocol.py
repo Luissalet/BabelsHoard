@@ -141,6 +141,11 @@ async def test_mcp_tool_contract_for_a_local_model(live_app, tmp_path):
             assert "not instructions" in (init.instructions or "")
             tools = {t.name: t for t in (await session.list_tools()).tools}
             for name, tool in tools.items():
+                # A tool listing may keep only the first line (cut at 120 characters): it
+                # must be a whole statement with English and Spanish trigger words.
+                first = tool.description.strip().splitlines()[0]
+                assert len(first) <= 110 and first.endswith(")") and " (" in first, (name, first)
+                assert any(w in first for w in ("librerías", "buscar", "firma", "comprobar", "leer", "registrar", "catálogo", "instalar", "indexar")), (name, first)
                 assert "Keywords:" in tool.description, name
                 keywords = tool.description.split("Keywords:", 1)[1]
                 assert any(w in keywords for w in ("buscar", "firma", "comprobar", "leer", "listar", "registrar", "catalogo", "instalar", "indexar")), name

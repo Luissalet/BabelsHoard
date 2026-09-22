@@ -3,6 +3,9 @@ and static frontend hosting."""
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import gc
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +24,17 @@ from .hoard_link import Link
 SERVICE = "babels-hoard"
 DISPLAY_NAME = "Babel's Hoard"
 
+
+
+def release_memory() -> None:
+    """Collect griffe's object graph after indexing a library and hand the
+    freed arenas back to the OS where the C library allows it (glibc)."""
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
 
 
 class AgentError(Exception):
@@ -117,7 +131,7 @@ class BrowserGuardMiddleware(BaseHTTPMiddleware):
 class DocsLibrariesArgs(BaseModel):
     ecosystem: str | None = None
     env: str | None = None
-    limit: int = 30
+    limit: int = 15  # a small-context model pages with offset
     offset: int = 0
 
 
@@ -299,6 +313,7 @@ def create_app(
                     done.append({"name": name, "status": lib["status"] if lib else "not_installed"})
                 except Exception as exc:  # noqa: BLE001
                     done.append({"name": name, "status": "error", "error": str(exc)[:200]})
+                release_memory()  # a parsed package can hold hundreds of MB until collected
                 progress((i + 1) / max(1, len(names)), f"indexed {name} ({i + 1}/{len(names)})")
             return {"indexed": done}
 
@@ -390,11 +405,12 @@ def create_app(
             env_row.pop("probe", None)
             job_id = None
             names: list[str] = []
+            dev: list[str] = []
             if args.index_dependencies and env_row.get("python_path") and env_row.get("project_path"):
-                names = deps.direct_dependencies(Path(env_row["project_path"]))
+                names, dev = deps.split_dependencies(Path(env_row["project_path"]))
                 if names:
                     job_id = dependency_job(env_row, names)
-            return {
+            out = {
                 "environment": environments.compact_env(env_row),
                 "dependency_job_id": job_id,
                 "dependencies": names[:30],
@@ -405,6 +421,9 @@ def create_app(
                     else "Registered. Packages are indexed on first use by api_lookup/api_check_code."
                 ),
             }
+            if dev:
+                out["skipped_dev_tools"] = dev[:15]
+            return out
 
         return call_tool("docs_add_environment", args.path, run)
 
@@ -551,14 +570,14 @@ def create_app(
         if not env_row.get("python_path"):
             raise AgentError("no_python", "this environment has no python interpreter", status=400)
         project_path = Path(env_row["project_path"]) if env_row.get("project_path") else None
-        names = deps.direct_dependencies(project_path) if project_path else []
+        names, dev = deps.split_dependencies(project_path) if project_path else ([], [])
         if not names:
             raise AgentError(
                 "no_dependencies",
                 "no pyproject.toml or requirements*.txt with dependencies next to this environment",
                 status=400,
             )
-        return {"job_id": dependency_job(env_row, names), "dependencies": names}
+        return {"job_id": dependency_job(env_row, names), "dependencies": names, "skipped_dev_tools": dev}
 
     @app.get("/api/search")
     def ui_search(q: str, library: str | None = None, ecosystem: str | None = None, kind: str | None = None, env: str | None = None, limit: int = 8):

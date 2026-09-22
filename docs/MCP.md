@@ -33,7 +33,7 @@ Conventions:
   `docs_add_environment`, `docs_install_docset` and `docs_index_folder`
   have `readOnlyHint=false`.
 
-## `docs_libraries(ecosystem?, env?, limit=30, offset=0)`
+## `docs_libraries(ecosystem?, env?, limit=15, offset=0)`
 
 What is indexed (current versions only), the environments and the last five
 background jobs. Use it to find an env id or follow a job.

@@ -33,6 +33,7 @@ export function useLang(): [Lang, (l: Lang) => void] {
   const [lang, setLangState] = useState<Lang>(detectLang);
 
   useEffect(() => {
+    document.documentElement.lang = lang; // screen readers and hyphenation follow the UI language
     try {
       localStorage.setItem("babel.lang", lang);
     } catch {

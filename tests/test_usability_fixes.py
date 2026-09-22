@@ -208,3 +208,203 @@ def test_b5_a_really_missing_submodule_is_still_an_error(conn, edge_env):
     result = checker.api_check_code(conn, "from edgelib import fastpartt\n", env_row=edge_env)
     assert _codes(result) == [(1, "error", "unknown_attribute")]
     assert result["findings"][0]["suggestion"] == "fastpart"
+
+
+# --------------------------------------------------------------------- B2 --
+@pytest.fixture()
+def capped_edge_env(conn, builtin_env, probe, monkeypatch):
+    """edgelib indexed with a 40-entry cap, like SQLAlchemy at 15,000:
+    submodules and classes past the cap are recorded but not expanded."""
+    with monkeypatch.context() as m:
+        m.setattr(indexing, "MAX_ENTRIES_PER_LIBRARY", 40)
+        lib = indexing.index_python_library(
+            conn, env=builtin_env, probe=probe, import_name="edgelib", dist_name="edgelib", version="1.0.0",
+            search_paths=[str(FIXTURES / "edgelib")],
+        )
+    assert lib["status"] == "partial"
+    row = conn.execute("SELECT meta_json FROM entries WHERE qualname='edgelib.stubbed'").fetchone()
+    assert '"nx"' in row["meta_json"]
+    # on-demand expansion re-reads the package from the interpreter's paths
+    monkeypatch.setattr(environments, "probe_python", _probe_with_fixture)
+    return builtin_env
+
+
+_ORIGINAL_PROBE = environments.probe_python
+
+
+def _probe_with_fixture(path, **kwargs):
+    real = _ORIGINAL_PROBE(path, **kwargs)
+    return {**real, "sys_path": [str(FIXTURES / "edgelib"), *real["sys_path"]]}
+
+
+def test_b2_a_namespace_past_the_cap_is_indexed_on_first_lookup(conn, capped_edge_env):
+    found = search.lookup_with_lazy_index(conn, "edgelib.stubbed.Generator.normal", env=capped_edge_env["id"])
+    assert found["found"], found
+    meta = conn.execute("SELECT meta_json FROM entries WHERE qualname='edgelib.stubbed'").fetchone()["meta_json"]
+    assert '"nx"' not in (meta or "")
+
+
+def test_b2_the_checker_expands_on_demand_and_reports_certain_errors(conn, capped_edge_env):
+    code = (
+        "from edgelib.stubbed import default_rng\n"
+        "from edgelib import Session\n"
+        "rng = default_rng(0)\n"
+        "rng.gaussian(1.0)\n"
+        "with Session('sqlite://') as s:\n"
+        "    s.url\n"
+        "    s.close_all()\n"
+    )
+    result = checker.api_check_code(conn, code, env_row=capped_edge_env)
+    assert _codes(result) == [(4, "error", "unknown_attribute"), (7, "error", "unknown_attribute")], result
+    # the expansion was merged into the same library, and is not repeated
+    count = conn.execute("SELECT entry_count FROM libraries WHERE name='edgelib'").fetchone()["entry_count"]
+    assert count > 40
+    again = checker.api_check_code(conn, code, env_row=capped_edge_env)
+    assert _codes(again) == _codes(result)
+    assert conn.execute("SELECT entry_count FROM libraries WHERE name='edgelib'").fetchone()["entry_count"] == count
+
+
+# --------------------------------------------------------------------- A9 --
+@pytest.mark.parametrize(
+    ("query", "first"),
+    [
+        ("timeout", "httpx.Timeout"),  # was httpx.Client.timeout, then two status-code constants
+        ("FastAPI", "fastapi.FastAPI"),  # was the fastapi module, the class not in the top 4
+        ("Field", "pydantic.Field"),  # was a helper named is_scalar_field
+        ("BaseModel", "pydantic.BaseModel"),
+        ("send a get request", "httpx.Client.get"),
+    ],
+)
+def test_a9_search_puts_the_api_you_mean_first(web_conn, query, first):
+    result = search.search(web_conn, query, limit=5)
+    assert result["results"][0]["qualname"] == first, [h["qualname"] for h in result["results"]]
+
+
+# --------------------------------------------------------------------- A2 --
+def test_a2_async_with_stream_binds_the_response(web_conn, web_env):
+    """``client.stream`` is an @asynccontextmanager annotated
+    ``-> AsyncIterator[Response]``: the streaming idiom was unverified."""
+    code = (
+        "import httpx\n"
+        "async def relay(url: str):\n"
+        "    async with httpx.AsyncClient(timeout=30) as client:\n"
+        "        async with client.stream('POST', url, json={}) as response:\n"
+        "            response.raise_for_status()\n"
+        "            async for line in response.aiter_lines():\n"
+        "                yield line\n"
+        "            async for line in response.aiter_text_lines():\n"
+        "                yield line\n"
+        "with httpx.Client() as c:\n"
+        "    with c.stream('GET', 'https://x') as r:\n"
+        "        r.iter_bytes()\n"
+        "        r.iter_byts()\n"
+    )
+    result = checker.api_check_code(web_conn, code, env_row=web_env)
+    assert _codes(result) == [(8, "error", "unknown_attribute"), (13, "error", "unknown_attribute")], result["findings"]
+    assert result["findings"][1]["suggestion"] == "iter_bytes"
+
+
+# --------------------------------------------------------------------- A1 --
+def test_a1_the_dependency_job_skips_development_tools(tmp_path):
+    from babels_hoard import deps
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndependencies = ["httpx", "SQLAlchemy>=2"]\n'
+        '[project.optional-dependencies]\nserver = ["uvicorn"]\ntest = ["hypothesis"]\n'
+        '[dependency-groups]\ndev = ["pytest", "ruff", "rich"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("fastapi\nmypy\npytest-asyncio\n", encoding="utf-8")
+    (tmp_path / "requirements-dev.txt").write_text("black\nipython\n", encoding="utf-8")
+    runtime, dev = deps.split_dependencies(tmp_path)
+    assert runtime == ["fastapi", "httpx", "sqlalchemy", "uvicorn"]
+    assert dev == ["black", "hypothesis", "ipython", "mypy", "pytest", "pytest-asyncio", "rich", "ruff"]
+    assert deps.direct_dependencies(tmp_path) == runtime
+    assert set(deps.direct_dependencies(tmp_path, include_dev=True)) == {*runtime, *dev}
+
+
+# --------------------------------------------------------------------- A3 --
+def test_a3_snippet_classes_inherit_their_bases_members(web_conn, web_env):
+    """``item.dict()`` on the user's own pydantic model: the class was not
+    followed, and PEP 702 ``@deprecated`` was not read."""
+    code = (
+        "from pydantic import BaseModel\n"
+        "class Item(BaseModel):\n"
+        "    name: str\n"
+        "    price: float = 0.0\n"
+        "    def label(self) -> str:\n"
+        "        self.cached = self.name.upper()\n"
+        "        return self.cached\n"
+        "def show(item: Item) -> dict:\n"
+        "    item.label()\n"
+        "    item.cached\n"
+        "    item.price\n"
+        "    item.model_dump(exclude_none=True)\n"
+        "    item.model_dump(exclude_nonee=True)\n"
+        "    return item.dict()\n"
+        "other = Item(name='x')\n"
+        "Item.model_validate({'name': 'y'})\n"
+    )
+    result = checker.api_check_code(web_conn, code, env_row=web_env)
+    assert _codes(result) == [(13, "error", "unexpected_keyword"), (14, "warning", "deprecated")], result["findings"]
+    assert "model_dump" in result["findings"][1]["message"]
+
+
+def test_a3_snippet_classes_with_dynamic_hooks_stay_silent(web_conn, web_env):
+    code = (
+        "from pydantic import BaseModel\n"
+        "class Loose(BaseModel):\n"
+        "    def __getattr__(self, name):\n"
+        "        return 1\n"
+        "Loose().anything\n"
+        "class Meta(BaseModel, extra='allow'):\n"
+        "    pass\n"
+        "Meta().whatever\n"
+    )
+    assert checker.api_check_code(web_conn, code, env_row=web_env)["findings"] == []
+
+
+# -------------------------------------------------------------------- A10 --
+def test_a10_named_imports_from_a_package_with_hundreds_of_exports_are_checked(conn, tmp_path):
+    from babels_hoard import node_indexing
+
+    if node_indexing.node_available() is None:
+        pytest.skip("Node.js not installed")
+    pkg = tmp_path / "node_modules" / "many-icons"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text('{"name": "many-icons", "version": "1.2.3", "types": "index.d.ts"}', encoding="utf-8")
+    (pkg / "index.d.ts").write_text(
+        "".join(f"export declare const Icon{i}: number;\n" for i in range(700)) + "export declare const Wand: number;\n",
+        encoding="utf-8",
+    )
+    env = {"id": "env-icons", "node_modules_path": str(tmp_path / "node_modules"), "label": "icons"}
+    lib = node_indexing.index_js_library(conn, env=env, package_name="many-icons")
+    assert lib["status"] == "done", lib["note"]
+    code = 'import { Icon3, Icon650, Wand, MagicWand } from "many-icons";\n'
+    result = checker.api_check_code(conn, code, env_row=env, language="typescript")
+    assert [(f["symbol"], f["severity"]) for f in result["findings"]] == [("many-icons.MagicWand", "error")]
+    assert result["checked"] == 4
+
+
+# -------------------------------------------------------------------- A11 --
+def test_a11_compound_keyword_suggests_the_part_that_is_a_parameter(web_conn, web_env):
+    result = checker.api_check_code(web_conn, "import httpx\nhttpx.Timeout(10, connect_timeout=5)\n", env_row=web_env)
+    assert [(f["code"], f.get("suggestion")) for f in result["findings"]] == [("unexpected_keyword", "connect")]
+
+
+def test_a11_js_name_exported_by_another_installed_package(conn, tmp_path):
+    from babels_hoard import node_indexing
+
+    if node_indexing.node_available() is None:
+        pytest.skip("Node.js not installed")
+    nm = tmp_path / "node_modules"
+    for name, body in (("core-lib", "export declare function useThing(): void;\n"),
+                       ("dom-lib", "export declare function useFormThing(): void;\n")):
+        (nm / name).mkdir(parents=True)
+        (nm / name / "package.json").write_text(f'{{"name": "{name}", "version": "1.0.0", "types": "index.d.ts"}}', encoding="utf-8")
+        (nm / name / "index.d.ts").write_text(body, encoding="utf-8")
+    env = {"id": "env-two-libs", "node_modules_path": str(nm), "label": "two"}
+    node_indexing.index_js_library(conn, env=env, package_name="dom-lib")
+    code = 'import { useThing, useFormThing } from "core-lib";\n'
+    finding = checker.api_check_code(conn, code, env_row=env, language="typescript")["findings"][0]
+    assert "exported by 'dom-lib'" in finding["message"]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FolderPlus, Library as LibraryIcon, Loader2, RefreshCw } from "lucide-react";
 import { api, ApiError } from "./api";
 import type { Key, Lang } from "./i18n";
@@ -24,7 +24,7 @@ function statusLabel(lang: Lang, status: string): string {
   return t(lang, key);
 }
 
-function PackageList({ env, lang, onIndexed }: { env: Environment; lang: Lang; onIndexed: () => void }) {
+function PackageList({ env, lang, onIndexed, refreshKey }: { env: Environment; lang: Lang; onIndexed: () => void; refreshKey: number }) {
   const [filter, setFilter] = useState("");
   const [packages, setPackages] = useState<InstalledPackage[]>([]);
   const [total, setTotal] = useState(0);
@@ -44,7 +44,7 @@ function PackageList({ env, lang, onIndexed }: { env: Environment; lang: Lang; o
     const h = setTimeout(() => load(filter), 150);
     return () => clearTimeout(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, env.id]);
+  }, [filter, env.id, refreshKey]);
 
   async function index(pkg: InstalledPackage) {
     // A distribution can ship several import names (pytest: py and pytest);
@@ -111,6 +111,11 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  const [skippedDev, setSkippedDev] = useState<string[]>([]);
+  // bumped whenever the dependency job reports progress, so "Indexed here"
+  // and the package statuses fill in while the job runs, not only at the end
+  const [refreshKey, setRefreshKey] = useState(0);
+  const lastMessage = useRef<string | null>(null);
 
   const load = () => api.libraries({ env: env.id }).then(setLibs).catch(() => {});
 
@@ -124,6 +129,11 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
     const id = setInterval(async () => {
       const j = await api.job(job.id);
       setJob(j);
+      if (j.message !== lastMessage.current) {
+        lastMessage.current = j.message;
+        load();
+        setRefreshKey((n) => n + 1);
+      }
       if (j.status === "done" || j.status === "error") {
         load();
         onChanged();
@@ -154,6 +164,7 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
     setError(null);
     try {
       const res = await api.indexDependencies(env.id);
+      setSkippedDev(res.skipped_dev_tools ?? []);
       setJob({ id: res.job_id, kind: "index_dependencies", status: "queued", progress: 0, message: null, error: null, created_at: "", updated_at: "", result: null });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -198,6 +209,9 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
           <div className="text-dim small" style={{ marginTop: 4 }}>
             {job.message ?? job.status}
           </div>
+          {skippedDev.length > 0 && (
+            <div className="text-dim small">{t(lang, "libraries_skipped_dev", { names: skippedDev.join(", ") })}</div>
+          )}
         </div>
       )}
 
@@ -234,7 +248,7 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
             {showPackages ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             {showPackages ? t(lang, "packages_hide") : t(lang, "packages_show")}
           </button>
-          {showPackages && <PackageList env={env} lang={lang} onIndexed={load} />}
+          {showPackages && <PackageList env={env} lang={lang} onIndexed={load} refreshKey={refreshKey} />}
         </>
       )}
 

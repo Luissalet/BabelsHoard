@@ -1272,3 +1272,36 @@ table.params-table {
   border-radius: 4px;
   padding: 0 4px;
 }
+
+/* "Look up <dotted.name>": the way in when a package is not indexed yet */
+.lookup-exact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border: 1px dashed var(--accent);
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.lookup-exact:hover,
+.lookup-exact:focus-visible {
+  border-style: solid;
+}
+.lookup-exact code {
+  font-family: var(--font-mono, monospace);
+}
+
+.finding-ok {
+  border-left: 3px solid var(--success);
+  background: var(--success-bg);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}

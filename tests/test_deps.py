@@ -13,8 +13,9 @@ dev = ["pytest"]
 """,
         encoding="utf-8",
     )
-    names = deps.direct_dependencies(tmp_path)
-    assert names == ["httpx", "pydantic", "pytest"]
+    # the eager dependency job skips development-only groups (usability report A1)
+    assert deps.direct_dependencies(tmp_path) == ["httpx", "pydantic"]
+    assert deps.direct_dependencies(tmp_path, include_dev=True) == ["httpx", "pydantic", "pytest"]
 
 
 def test_direct_dependencies_from_requirements_txt(tmp_path):
@@ -41,4 +42,5 @@ lint = ["ruff>=0.5", {include-group = "dev"}]
 """,
         encoding="utf-8",
     )
-    assert deps.direct_dependencies(tmp_path) == ["django", "pytest", "requests", "ruff"]
+    assert deps.direct_dependencies(tmp_path) == ["django", "requests"]
+    assert deps.direct_dependencies(tmp_path, include_dev=True) == ["django", "pytest", "requests", "ruff"]

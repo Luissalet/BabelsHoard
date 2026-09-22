@@ -82,17 +82,19 @@ def _post(tool: str, payload: dict) -> dict:
 
 
 @mcp.tool(annotations=_READ)
-def docs_libraries(ecosystem: str | None = None, env: str | None = None, limit: int = 30, offset: int = 0) -> dict:
-    """List what Babel has indexed (exact versions), the registered environments
-    (project interpreters / node_modules folders; one is marked default) and recent
-    background jobs. Use it to find an env id, or to follow a docset install / dependency
+def docs_libraries(ecosystem: str | None = None, env: str | None = None, limit: int = 15, offset: int = 0) -> dict:
+    """List indexed libraries, exact versions and project environments (libraries, librerías, versión, entornos)
+
+    What Babel has indexed (exact versions), the registered environments (project
+    interpreters / node_modules folders; default_for says which one answers Python or
+    TypeScript when env is omitted) and recent background jobs. Use it to find an env id, or to follow a docset install / dependency
     indexing job. Installed packages that are not listed yet are indexed automatically
     the first time api_lookup or api_check_code needs them.
 
     Args:
         ecosystem: "python", "js", "docset" or "markdown".
         env: environment id or project path; limits libraries to that environment.
-        limit: libraries per page (default 30, max 200). offset: for the next page.
+        limit: libraries per page (default 15, max 200). offset: for the next page.
 
     Returns: {libraries: [{id, ecosystem, name, version, env, status, entries}], total,
         has_more, next_offset, environments: [{id, label, python, default, ...}],
@@ -112,7 +114,9 @@ def docs_search(
     env: str | None = None,
     limit: int = 8,
 ) -> dict:
-    """Ranked full-text search over indexed APIs, offline docsets and markdown docs.
+    """Search installed APIs and docs by words (search docs, buscar función, cómo se hace, documentación)
+
+    Ranked full-text search over indexed APIs, offline docsets and markdown docs.
     Use it when you know roughly what you need but not the exact name ("read a csv",
     "retry on timeout"); then call api_lookup on the qualname you pick, or docs_read on a
     section id. Only searches what is already indexed.
@@ -138,8 +142,10 @@ def docs_search(
 
 @mcp.tool(annotations=_READ)
 def api_lookup(symbol: str, env: str | None = None, library: str | None = None) -> dict:
-    """Exact signature, parameters (with defaults and which are required), return type,
-    docstring and source location of one dotted symbol, from the version installed in the
+    """Exact signature of an installed API (signature, firma, parámetros, documentación, versión instalada)
+
+    Parameters (with defaults and which are required), return type, docstring and
+    source location of one dotted symbol, from the version installed in the
     environment - e.g. "pandas.DataFrame.merge", "httpx.Client", "json.dumps", or
     "react.useState" for a node_modules package. Use it before calling any API you are not
     sure about. Indexes the package on first use (local, no network; can take seconds).
@@ -162,7 +168,9 @@ def api_lookup(symbol: str, env: str | None = None, library: str | None = None) 
 
 @mcp.tool(annotations=_READ)
 def api_check_code(code: str, env: str | None = None, language: str = "python") -> dict:
-    """Statically check a code snippet against the libraries installed in the environment:
+    """Check code for hallucinated or misused APIs of installed versions (check code, comprobar código, validar)
+
+    Statically checks a snippet against the libraries installed in the environment:
     unknown modules/attributes (hallucinated or removed APIs), unexpected keyword arguments,
     too many positional arguments, missing required arguments, deprecated calls. Never runs
     the code. Run it on code you wrote before showing it; fix errors, re-check.
@@ -185,8 +193,9 @@ def api_check_code(code: str, env: str | None = None, language: str = "python") 
 
 @mcp.tool(annotations=_READ)
 def docs_read(id: str, offset: int = 0, max_chars: int = 4000) -> dict:
-    """Read the full text of one entry - a docset page section, a markdown section or a
-    long docstring - by its id, in chunks. Ids come from docs_search results and from
+    """Read the full text of one doc entry by id, in chunks (read docs, leer documentación, seguir leyendo)
+
+    One entry is a docset page section, a markdown section or a long docstring. Ids come from docs_search results and from
     api_lookup (field id).
 
     Args:
@@ -203,10 +212,13 @@ def docs_read(id: str, offset: int = 0, max_chars: int = 4000) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def docs_add_environment(path: str, index_dependencies: bool = True) -> dict:
-    """Register a project so its installed packages can be looked up and checked: a project
-    folder (its .venv/venv/env and node_modules are detected), a python/python.exe
-    interpreter, or a node_modules folder. The most recently registered project becomes the
-    default env. Call once per project; registering again is harmless.
+    """Register a project folder or venv so its packages can be checked (register project, registrar proyecto)
+
+    Accepts a project folder (its .venv/venv/env and node_modules, also in frontend/,
+    web/, client/ or ui/, are detected), a python/python.exe interpreter, or a
+    node_modules folder. The most recently registered project becomes the default env
+    (per language: Python checks never default to a node_modules-only env). Registering
+    again is harmless and makes it the default again.
 
     Args:
         path: absolute path to the project folder, interpreter or node_modules.
@@ -222,8 +234,10 @@ def docs_add_environment(path: str, index_dependencies: bool = True) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def docs_catalog(query: str = "", limit: int = 10) -> dict:
-    """List offline documentation sets that can be downloaded (language references,
-    frameworks: python, javascript, react, css, rust...). Reaches the internet (the public
+    """List downloadable offline docsets; uses internet (docset catalogue, catálogo, documentación offline)
+
+    Language references and frameworks: python, javascript, react, css, rust... Reaches
+    the internet (the public
     DevDocs catalogue). Use before docs_install_docset to get the exact slug.
 
     Args:
@@ -239,8 +253,9 @@ def docs_catalog(query: str = "", limit: int = 10) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def docs_install_docset(slug: str) -> dict:
-    """Download and index one offline docset by its slug from docs_catalog (e.g.
-    "python~3.13"). Reaches the internet. Runs as a background job and returns at once;
+    """Download and index one offline docset in background (install docs, instalar documentación, descargar)
+
+    Takes a slug from docs_catalog (e.g. "python~3.13"). Reaches the internet. Runs as a background job and returns at once;
     follow it with docs_libraries (jobs) and search it with docs_search when done.
 
     Args:
@@ -255,8 +270,10 @@ def docs_install_docset(slug: str) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def docs_index_folder(path: str, name: str | None = None) -> dict:
-    """Index a folder of .md/.mdx/.rst/.txt documentation (a project's docs/ folder, a
-    cloned docs repository) by heading, so docs_search and docs_read can use it.
+    """Index a folder of Markdown docs for search (index folder, indexar carpeta, documentación del proyecto)
+
+    Indexes .md/.mdx/.rst/.txt files (a project's docs/ folder, a cloned docs
+    repository) by heading, so docs_search and docs_read can use it.
     Dependency, VCS and build folders are skipped; at most 2000 files.
 
     Args:

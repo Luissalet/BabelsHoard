@@ -154,12 +154,12 @@ export function CheckPage({ lang }: { lang: Lang }) {
               <>
                 {errors > 0 && (
                   <span className="summary-pill err">
-                    <XCircle size={15} /> {t(lang, "check_errors", { n: errors })}
+                    <XCircle size={15} /> {t(lang, errors === 1 ? "check_errors_1" : "check_errors", { n: errors })}
                   </span>
                 )}
                 {warnings > 0 && (
                   <span className="summary-pill warn">
-                    <AlertTriangle size={15} /> {t(lang, "check_warnings", { n: warnings })}
+                    <AlertTriangle size={15} /> {t(lang, warnings === 1 ? "check_warnings_1" : "check_warnings", { n: warnings })}
                   </span>
                 )}
               </>

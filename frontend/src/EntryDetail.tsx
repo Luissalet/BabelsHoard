@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Check, Copy, FileCode2, X } from "lucide-react";
 import { api } from "./api";
 import type { Key, Lang } from "./i18n";
-import { t } from "./i18n";
+import { kindLabel, t } from "./i18n";
 import { InlineMarkdown, Markdown } from "./Markdown";
 import { Signature } from "./Signature";
 import type { LookupResult, Param } from "./types";
@@ -133,7 +133,7 @@ export function EntryDetail({
           <div style={{ minWidth: 0 }}>
             <div className="detail-title mono">{target.qualname}</div>
             <div className="detail-sub">
-              <span className="badge badge-neutral">{data?.kind ?? target.kind}</span>
+              <span className="badge badge-neutral">{kindLabel(lang, data?.kind ?? target.kind)}</span>
               {(data?.library ?? target.library) && <span>{data?.library ?? target.library}</span>}
             </div>
           </div>

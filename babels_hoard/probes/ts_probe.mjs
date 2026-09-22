@@ -124,7 +124,11 @@ function isDeprecated(sym) {
   }
 }
 
+// Full detail (types, docs, members) for the first MAX_EXPORTS exports; past
+// that only names and kinds, which is all a named-import check needs, so
+// big icon/component libraries (lucide-react) stay fully checkable.
 const MAX_EXPORTS = 500;
+const MAX_NAMES = 50000;
 const results = [];
 for (const sym of exportSymbols.slice(0, MAX_EXPORTS)) {
   const decl = sym.declarations && sym.declarations[0];
@@ -176,12 +180,18 @@ for (const sym of exportSymbols.slice(0, MAX_EXPORTS)) {
   });
 }
 
+const namesOnly = exportSymbols.slice(MAX_EXPORTS, MAX_NAMES).map((sym) => ({
+  name: sym.getName(),
+  kind: declKind(sym.declarations && sym.declarations[0]),
+}));
+
 console.log(
   JSON.stringify({
     name: pkgName,
     version,
     entry: path.relative(pkgDir, entry),
     exports: results,
-    truncated: exportSymbols.length > MAX_EXPORTS,
+    names_only: namesOnly,
+    truncated: exportSymbols.length > MAX_NAMES,
   })
 );

@@ -4,7 +4,7 @@ import { api, ApiError } from "./api";
 import type { DetailTarget } from "./EntryDetail";
 import { EntryDetail } from "./EntryDetail";
 import type { Lang } from "./i18n";
-import { t } from "./i18n";
+import { kindLabel, t } from "./i18n";
 import { InlineMarkdown } from "./Markdown";
 import { Signature } from "./Signature";
 import type { AskResult, Environment, HealthInfo, Library, SearchHit } from "./types";
@@ -60,6 +60,8 @@ function AnswerText({
 const ECOSYSTEMS = ["python", "js", "docset", "markdown"];
 const KINDS = ["module", "class", "function", "method", "attribute", "property", "section"];
 const EXAMPLES = ["send a get request", "parse json", "timeout", "validate a model", "router"];
+// "sqlalchemy.ext.asyncio.async_sessionmaker", "@tanstack/react-query.useQuery"
+const DOTTED = /^(@[\w.-]+\/)?[A-Za-z_][\w-]*(\.[A-Za-z_]\w*)+$/;
 
 export function SearchPage({ lang }: { lang: Lang }) {
   const [query, setQuery] = useState("");
@@ -132,6 +134,10 @@ export function SearchPage({ lang }: { lang: Lang }) {
 
   const libraryNames = [...new Set(libraries.map((l) => l.name))].sort();
   const nothingIndexed = libraries.length === 0;
+  const dotted = DOTTED.test(query.trim()) ? query.trim() : null;
+  const exactHit = dotted !== null && results.some((r) => r.qualname === dotted);
+  const openSymbol = (qualname: string) =>
+    setSelected({ id: qualname, qualname, kind: "symbol", library: null, env_id: envFilter || null });
 
   return (
     <div className="page">
@@ -163,7 +169,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
           </option>
           {KINDS.map((k) => (
             <option key={k} value={k}>
-              {k}
+              {kindLabel(lang, k)}
             </option>
           ))}
         </select>
@@ -188,6 +194,16 @@ export function SearchPage({ lang }: { lang: Lang }) {
           ))}
         </select>
       </div>
+
+      {dotted && !exactHit && (
+        <button className="lookup-exact" onClick={() => openSymbol(dotted)}>
+          <SearchIcon size={14} />
+          <span>
+            {t(lang, "search_lookup_exact")} <code>{dotted}</code>
+          </span>
+          <span className="text-dim small">{t(lang, "search_lookup_exact_hint")}</span>
+        </button>
+      )}
 
       {query.trim() && results.length > 0 && (
         <div className="stack-gap" style={{ gap: 8, marginBottom: 4 }}>
@@ -297,6 +313,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
         <div className="empty-state">
           <SearchIcon size={40} />
           <div>{t(lang, "search_no_results")}</div>
+          {!dotted && <div className="text-dim small">{t(lang, "search_no_results_hint")}</div>}
           {didYouMean.length > 0 && (
             <div className="chips" style={{ justifyContent: "center", marginTop: 8 }}>
               {didYouMean.map((s) => (
@@ -319,7 +336,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
             <div className="result-top">
               <span className="result-qualname">{hit.qualname}</span>
               <span className="result-meta">
-                <span className={`badge badge-kind kind-${hit.kind}`}>{hit.kind}</span>
+                <span className={`badge badge-kind kind-${hit.kind}`}>{kindLabel(lang, hit.kind)}</span>
                 {hit.library && <span className="mono">{hit.library}</span>}
               </span>
             </div>

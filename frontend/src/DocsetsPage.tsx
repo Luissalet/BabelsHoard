@@ -1,9 +1,86 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Download, Globe } from "lucide-react";
+import { BookOpen, Download, FolderSearch, Globe, Loader2 } from "lucide-react";
 import { api, ApiError } from "./api";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
-import type { DocsetCatalogItem, DocsetEntry, Job } from "./types";
+import type { DocsetCatalogItem, DocsetEntry, Job, Library } from "./types";
+
+/** Index a folder of Markdown/reST docs (a project's docs/) so Search finds
+ * its sections next to the API index. Local only, no network. */
+function FolderCard({ lang }: { lang: Lang }) {
+  const [folders, setFolders] = useState<Library[]>([]);
+  const [path, setPath] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const load = () => api.libraries({ ecosystem: "markdown" }).then(setFolders).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function indexFolder() {
+    if (!path.trim()) return;
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const r = await api.indexFolder(path.trim(), name.trim() || undefined);
+      setDone(t(lang, "folders_done", { name: r.name, note: r.note ?? "" }));
+      setPath("");
+      setName("");
+      load();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="section-title">{t(lang, "folders_title")}</div>
+      <div className="text-dim small" style={{ marginBottom: 10 }}>
+        {t(lang, "folders_intro")}
+      </div>
+      <div className="field-row">
+        <input
+          className="input"
+          style={{ flex: 3 }}
+          placeholder={t(lang, "folders_path_placeholder")}
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && indexFolder()}
+        />
+        <input
+          className="input"
+          style={{ flex: 1, minWidth: 120 }}
+          placeholder={t(lang, "folders_name_placeholder")}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && indexFolder()}
+        />
+        <button className="btn btn-primary" onClick={indexFolder} disabled={busy || !path.trim()}>
+          {busy ? <Loader2 size={14} className="spin" /> : <FolderSearch size={14} />} {t(lang, "folders_button")}
+        </button>
+      </div>
+      {error && <div className="finding" style={{ marginTop: 10 }}>{error}</div>}
+      {done && <div className="finding-ok small" style={{ marginTop: 10 }}>{done}</div>}
+      {folders.map((f) => (
+        <div className="lib-row" key={f.id}>
+          <div className="lib-main">
+            <span className="lib-name">{f.name}</span>
+            <span className="text-dim small mono">{f.source.replace(/^folder:/, "")}</span>
+          </div>
+          <span className="text-dim small">
+            {f.entry_count.toLocaleString()} {t(lang, "docsets_sections")}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function DocsetsPage({ lang }: { lang: Lang }) {
   const [installed, setInstalled] = useState<DocsetEntry[]>([]);
@@ -89,6 +166,8 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
           </div>
         ))}
       </div>
+
+      <FolderCard lang={lang} />
 
       <div className="card">
         <div className="section-title">{t(lang, "docsets_catalog")}</div>

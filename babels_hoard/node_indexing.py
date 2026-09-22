@@ -207,6 +207,13 @@ def _index_js_locked(conn, env, node_modules: Path, source: str, package_name: s
                     f"{lib_id}:{qualname}",
                 )
             )
+    names_only = result.get("names_only") or []
+    for exp in names_only:
+        qualname = f"{package_name}.{exp['name']}"
+        rows.append(
+            (f"{lib_id}:{qualname}", lib_id, exp["name"], qualname, exp.get("kind", "value"), None, None, None,
+             None, None, 0, None, None, None, None)
+        )
     conn.execute("DELETE FROM entries WHERE library_id=?", (lib_id,))
     conn.executemany(
         """
@@ -218,9 +225,12 @@ def _index_js_locked(conn, env, node_modules: Path, source: str, package_name: s
         rows,
     )
     status = "partial" if result.get("truncated") else "done"
+    note = f"indexed {len(rows)} entries from {result.get('entry')}"
+    if names_only:
+        note += f"; {len(names_only)} exports listed by name only (no signatures)"
     conn.execute(
         "UPDATE libraries SET status=?, entry_count=?, note=?, indexed_at=? WHERE id=?",
-        (status, len(rows), f"indexed {len(rows)} entries from {result.get('entry')}", db.now(), lib_id),
+        (status, len(rows), note, db.now(), lib_id),
     )
     conn.execute(
         "UPDATE libraries SET status='superseded' WHERE ecosystem='js' AND name=? AND source=? AND id != ? "

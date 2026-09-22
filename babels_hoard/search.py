@@ -58,6 +58,48 @@ def _row_to_hit(row: dict[str, Any], lib: dict[str, Any] | None, score: float) -
     }
 
 
+# Full-text rank alone puts constants and instance attributes first
+# ("query embedding" -> Task.RETRIEVAL_QUERY before TextEmbedding.query_embed).
+# What a person searching an API wants first is a callable or a class whose
+# own name matches the words, reachable by a short public path.
+_KIND_WEIGHT = {"class": 1.25, "function": 1.25, "method": 1.2, "module": 1.05, "property": 1.0, "attribute": 0.8}
+_LEGACY_PARTS = {"v1", "deprecated", "compat", "legacy"}
+_STOP = {"a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "with", "by", "how", "do", "i", "is"}
+
+
+def _query_words(query: str) -> list[str]:
+    return [p.lower() for word in query.split() for p in _CAMEL_SPLIT.split(word) if p]
+
+
+def _name_tokens(name: str) -> list[str]:
+    return [t.lower() for t in _CAMEL_SPLIT.split(name) if t]
+
+
+def _relevance(row: dict[str, Any], words: list[str]) -> float:
+    kind = row.get("kind") or ""
+    if kind == "section":
+        return 1.0
+    name = row["qualname"].rsplit(".", 1)[-1]
+    weight = _KIND_WEIGHT.get(kind, 1.0)
+    if len(name) > 1 and name.isupper():
+        weight *= 0.7  # a constant
+    wanted = [w for w in words if w not in _STOP and len(w) > 1]
+    tokens = _name_tokens(name)
+    if wanted and tokens:
+        def matches(w: str) -> bool:
+            return any(t == w or (min(len(t), len(w)) >= 4 and (t.startswith(w) or w.startswith(t))) for t in tokens)
+
+        if "".join(wanted) == "".join(tokens):
+            weight *= 2.0  # the name *is* the query ("async sessionmaker")
+        elif all(matches(w) for w in wanted):
+            weight *= 1.4
+    depth = row["qualname"].count(".")
+    weight *= max(0.8, 0.96 ** max(0, depth - 1))
+    if any(part in _LEGACY_PARTS or part.startswith("_") for part in row["qualname"].split(".")[1:-1]):
+        weight *= 0.85  # pydantic.v1.BaseModel, pkg._internal.x, pkg.deprecated.y
+    return weight
+
+
 def search(
     conn,
     query: str,
@@ -70,6 +112,20 @@ def search(
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 50))
     fts_query = _tokenize_for_query(query)
+    filters = ""
+    filter_params: list[Any] = []
+    if library:
+        filters += " AND (l.name = ? OR l.name = ?)"
+        filter_params += [library, f"stdlib/{library}"]
+    if ecosystem:
+        filters += " AND l.ecosystem = ?"
+        filter_params.append(ecosystem)
+    if kind:
+        filters += " AND e.kind = ?"
+        filter_params.append(kind)
+    if env:
+        filters += " AND (l.env_id = ? OR l.env_id IS NULL)"
+        filter_params.append(env)
     sql = f"""
         SELECT e.id, e.qualname, e.kind, e.signature, e.summary, e.library_id, e.target,
                bm25(entries_fts, 10.0, 6.0, 2.0, 2.0, 1.0) AS rank
@@ -77,27 +133,35 @@ def search(
         JOIN entries e ON e.rowid = entries_fts.rowid
         JOIN libraries l ON l.id = e.library_id
         WHERE entries_fts MATCH ? AND l.status IN {_CURRENT}
-          AND e.name NOT IN ('__init__', '__call__', '__enter__', '__aenter__')
+          AND e.name NOT IN ('__init__', '__call__', '__enter__', '__aenter__'){filters}
+        ORDER BY rank LIMIT ?
     """
-    params: list[Any] = [fts_query]
-    if library:
-        sql += " AND (l.name = ? OR l.name = ?)"
-        params += [library, f"stdlib/{library}"]
-    if ecosystem:
-        sql += " AND l.ecosystem = ?"
-        params.append(ecosystem)
-    if kind:
-        sql += " AND e.kind = ?"
-        params.append(kind)
-    if env:
-        sql += " AND (l.env_id = ? OR l.env_id IS NULL)"
-        params.append(env)
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit * 4 + 1)
     try:
-        fetched = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        fetched = [dict(r) for r in conn.execute(sql, [fts_query, *filter_params, limit * 4 + 1]).fetchall()]
     except Exception:
         fetched = []
+    ident = query.strip()
+    if ident.isidentifier():
+        # An exact identifier ("Field", "FastAPI") must reach the ranking
+        # even when long docstrings push it out of the full-text pool.
+        seen_ids = {r["id"] for r in fetched}
+        pool_best = min((r["rank"] for r in fetched), default=-10.0)
+        exact_sql = f"""
+            SELECT e.id, e.qualname, e.kind, e.signature, e.summary, e.library_id, e.target, ? AS rank
+            FROM entries e JOIN libraries l ON l.id = e.library_id
+            WHERE e.name = ? AND l.status IN {_CURRENT}{filters}
+            ORDER BY length(e.qualname) LIMIT 20
+        """
+        try:
+            for r in conn.execute(exact_sql, [pool_best, ident, *filter_params]).fetchall():
+                if r["id"] not in seen_ids:
+                    fetched.append(dict(r))
+        except Exception:  # noqa: BLE001
+            pass
+        # every exact match starts level; kind, path depth and legacy paths decide
+        for r in fetched:
+            if r["qualname"].rsplit(".", 1)[-1] == ident:
+                r["rank"] = pool_best
     # The same object re-exported under several paths (fastapi.sse.BaseModel
     # is pydantic's BaseModel) is one hit: keep the path in the package that
     # defines it, otherwise the best-ranked one.
@@ -112,14 +176,20 @@ def search(
             order.append(key)
         elif native and not best[key]["_native"]:
             best[key] = r
+        elif native == best[key]["_native"] and r["qualname"].count(".") < best[key]["qualname"].count("."):
+            best[key] = {**r, "rank": min(r["rank"], best[key]["rank"])}  # the shortest public path
     rows = [best[k] for k in order]
+    words = _query_words(query)
+    for r in rows:
+        r["_score"] = -r["rank"] * _relevance(r, words)
+    rows.sort(key=lambda r: -r["_score"])
     lib_cache: dict[str, Any] = {}
     hits = []
     for row_d in rows[:limit]:
         lib_id = row_d["library_id"]
         if lib_id not in lib_cache:
             lib_cache[lib_id] = db.dump(conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone())
-        hits.append(_row_to_hit(row_d, lib_cache[lib_id], -row_d["rank"]))
+        hits.append(_row_to_hit(row_d, lib_cache[lib_id], row_d["_score"]))
     out: dict[str, Any] = {
         "query": query,
         "results": hits,

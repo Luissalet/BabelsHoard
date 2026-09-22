@@ -44,6 +44,8 @@ class SymbolIndex:
         self._entry_cache: dict[str, dict[str, Any] | None] = {}
         self._lib_cache: dict[str, dict[str, Any] | None] = {}
         self._libs_by_id: dict[str, dict[str, Any]] = {}
+        self._loaders: dict[str, Any] = {}  # parsed packages reused by on-demand expansion
+        self.expanded: list[str] = []
 
     # ------------------------------------------------------------ libraries
     def library_for(self, top: str) -> dict[str, Any] | None:
@@ -76,7 +78,17 @@ class SymbolIndex:
             if row is None:
                 return None
             self._libs_by_id[lib_id] = db.dump(row)
+        if "_db" not in self._libs_by_id[lib_id]:
+            self._libs_by_id[lib_id]["_db"] = self._db_file()
         return self._libs_by_id[lib_id]
+
+    def _db_file(self) -> str:
+        if not hasattr(self, "_db_path"):
+            try:
+                self._db_path = self.conn.execute("PRAGMA database_list").fetchone()["file"] or ""
+            except Exception:  # noqa: BLE001
+                self._db_path = ""
+        return self._db_path
 
     # -------------------------------------------------------------- entries
     def entry(self, qualname: str) -> dict[str, Any] | None:
@@ -99,10 +111,30 @@ class SymbolIndex:
     def home(self, e: dict[str, Any]) -> str:
         return parse_meta(e).get("see") or e["qualname"]
 
+    def expand(self, e: dict[str, Any]) -> bool:
+        """Index ``e``'s namespace now if the capped eager pass skipped it
+        (see ``indexing.expand_on_demand``). Clears the entry cache."""
+        if not self.lazy or not self.env.get("python_path"):
+            return False
+        lib = self.library(e["library_id"]) if e.get("library_id") else None
+        if not indexing.expandable(e, lib):
+            return False
+        if not indexing.expand_on_demand(self.conn, self.env, lib, e, self._loaders):
+            return False
+        self.expanded.append(e["qualname"])
+        self._entry_cache.clear()
+        return True
+
     def child(self, e: dict[str, Any], name: str) -> dict[str, Any] | Missing:
         found = self.entry(f"{self.home(e)}.{name}")
         if found is not None:
             return found
+        if not name.startswith("_") or name in indexing.KEEP_DUNDERS:
+            home = self.entry(self.home(e)) or e
+            if self.expand(home):
+                found = self.entry(f"{self.home(e)}.{name}")
+                if found is not None:
+                    return found
         return Missing(e, name, self.certainty_of_absence(e, name))
 
     def certainty_of_absence(self, e: dict[str, Any], name: str) -> str:
@@ -127,6 +159,8 @@ class SymbolIndex:
         ``see`` homes). ``None`` when the top-level name is unknown."""
         direct = self.entry(dotted)
         if direct is not None:
+            if direct["kind"] in ("module", "class") and self.expand(direct):
+                direct = self.entry(dotted) or direct
             return direct
         parts = dotted.split(".")
         cur = self.entry(parts[0])

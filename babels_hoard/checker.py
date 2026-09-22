@@ -59,13 +59,25 @@ class Finding:
 
 
 @dataclass
+class LocalClass:
+    """A class defined in the snippet itself (``class Item(BaseModel)``)
+    whose bases are all indexed classes: names it does not define itself
+    are looked up on the bases."""
+
+    name: str
+    bases: list[dict[str, Any]]
+    own: set[str]
+
+
+@dataclass
 class Value:
     """What an expression evaluates to, as far as the index can tell."""
 
-    kind: str                      # module | class | instance | callable
-    entry: dict[str, Any]          # the module/class entry, or the function entry
+    kind: str                      # module | class | instance | callable | local_class | local_instance
+    entry: dict[str, Any] | None   # the module/class entry, or the function entry (None for local kinds)
     receiver: str | None = None    # for callables: "instance" | "class" | None (plain function)
     owner: dict[str, Any] | None = None  # for methods: the class entry they were reached through
+    local: LocalClass | None = None
 
 
 @dataclass
@@ -155,7 +167,26 @@ class _Checker(ast.NodeVisitor):
         v = self._type_of(ann)
         if v is not None and v.kind == "class":
             return Value("instance", v.entry)
+        if v is not None and v.kind == "local_class":
+            return Value("local_instance", None, local=v.local)
         return None
+
+    _CERTAINTY_RANK = {"unknown": 0, "warning": 1, "error": 2}
+
+    def _local_member(self, local: LocalClass, attr: str) -> dict[str, Any] | Missing | None:
+        """A member of a snippet class: None when the class body defines it
+        (or may), else the first base that has it, else a Missing as sure
+        as the least sure base."""
+        if attr in local.own:
+            return None
+        missing: Missing | None = None
+        for base in local.bases:
+            m = self.sym.child(base, attr)
+            if not isinstance(m, Missing):
+                return m
+            if missing is None or self._CERTAINTY_RANK[m.certainty] < self._CERTAINTY_RANK[missing.certainty]:
+                missing = m
+        return missing
 
     # --------------------------------------------------- type evaluation
     def _type_of(self, node: ast.AST) -> Value | None:
@@ -174,6 +205,13 @@ class _Checker(ast.NodeVisitor):
             base = self._type_of(node.value)
             if base is None or base.kind == "callable":
                 return None
+            if base.local is not None:
+                member = self._local_member(base.local, node.attr)
+                if member is None or isinstance(member, Missing):
+                    return None
+                receiver = "instance" if base.kind == "local_instance" else "class"
+                owner = self.sym.entry(member["qualname"].rsplit(".", 1)[0])  # the base that has it
+                return self._value_of_entry(member, receiver=receiver, owner=owner)
             member = self.sym.child(base.entry, node.attr)
             if isinstance(member, Missing):
                 return None
@@ -194,6 +232,8 @@ class _Checker(ast.NodeVisitor):
         callee = self._type_of(node.func)
         if callee is None:
             return None
+        if callee.kind == "local_class":
+            return Value("local_instance", None, local=callee.local)
         if callee.kind == "class":
             meta = parse_meta(callee.entry)
             if meta.get("ctor"):
@@ -329,9 +369,9 @@ class _Checker(ast.NodeVisitor):
         value = self._type_of(node.value) if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) else None
         for t in node.targets:
             self.visit(t)
-        if value is not None and value.kind == "instance":
+        if value is not None and value.kind in ("instance", "local_instance"):
             self.bindings[node.targets[0].id] = value  # type: ignore[union-attr]
-        elif value is not None and value.kind in ("module", "class") and isinstance(node.targets[0], ast.Name):
+        elif value is not None and value.kind in ("module", "class", "local_class") and isinstance(node.targets[0], ast.Name):
             self.bindings[node.targets[0].id] = value
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -341,16 +381,28 @@ class _Checker(ast.NodeVisitor):
         self.visit(node.target)
         if isinstance(node.target, ast.Name):
             value = self._type_of(node.value) if node.value is not None else None
-            if value is None or value.kind != "instance":
+            if value is None or value.kind not in ("instance", "local_instance"):
                 value = self._instance_of_annotation(node.annotation)
             if value is not None:
                 self.bindings[node.target.id] = value
 
+    def _yielded_by_context_manager(self, expr: ast.AST) -> Value | None:
+        """``with client.stream(...) as r`` where ``stream`` is an
+        ``@(async)contextmanager`` annotated ``-> (Async)Iterator[Response]``."""
+        if not isinstance(expr, ast.Call):
+            return None
+        callee = self._type_of(expr.func)
+        if callee is None or callee.kind != "callable":
+            return None
+        target = parse_meta(callee.entry).get("cm")
+        cls = self.sym.class_by_target(target) if target else None
+        return Value("instance", cls) if cls is not None else None
+
     def _with(self, node: ast.With | ast.AsyncWith, enter: str) -> None:
         for item in node.items:
             self.visit(item.context_expr)
-            bound = None
-            ctx_value = self._type_of(item.context_expr)
+            bound = self._yielded_by_context_manager(item.context_expr)
+            ctx_value = None if bound is not None else self._type_of(item.context_expr)
             if ctx_value is not None and ctx_value.kind == "instance":
                 enter_e = self.sym.child(ctx_value.entry, enter)
                 if not isinstance(enter_e, Missing):
@@ -437,12 +489,51 @@ class _Checker(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for expr in [*node.decorator_list, *node.bases, *[k.value for k in node.keywords]]:
             self.visit(expr)
+        local = self._local_class(node)
         outer = self.bindings
         self.bindings = dict(outer)
         for stmt in node.body:
             self.visit(stmt)
         self.bindings = outer
         self._forget(node.name)
+        if local is not None:
+            self.bindings[node.name] = Value("local_class", None, local=local)
+
+    def _local_class(self, node: ast.ClassDef) -> LocalClass | None:
+        """Track a snippet class only when nothing about it can add names
+        behind our back: no metaclass/keywords, no decorators other than
+        dataclass, every base an indexed class, and no dynamic attribute
+        hooks in its body."""
+        if node.keywords or not node.bases:
+            return None
+        for deco in node.decorator_list:
+            target = deco.func if isinstance(deco, ast.Call) else deco
+            if (_dotted(target) or "").rsplit(".", 1)[-1] != "dataclass":
+                return None
+        bases = []
+        for b in node.bases:
+            v = self._type_of(b)
+            if v is None or v.kind != "class":
+                return None
+            bases.append(self.sym.entry(self.sym.home(v.entry)) or v.entry)
+        own: set[str] = set()
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                own.add(stmt.name)
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                    own.add(sub.id)
+                elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Store) and isinstance(sub.value, ast.Name):
+                    own.add(sub.attr)  # self.x = ..., cls.x = ...
+                elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    own.add(sub.name)
+                elif isinstance(sub, ast.Attribute) and sub.attr == "__dict__":
+                    return None
+                elif isinstance(sub, ast.Call) and _dotted(sub.func) in ("setattr", "object.__setattr__"):
+                    return None
+        if own & {"__getattr__", "__getattribute__", "__setattr__", "__slots__"}:
+            return None
+        return LocalClass(node.name, bases, own)
 
     def _comprehension(self, node: ast.AST) -> None:
         # Generators first: their targets shadow names used in the element.
@@ -541,6 +632,9 @@ class _Checker(ast.NodeVisitor):
         if base.kind == "callable":
             self.ctx.unchecked += 1
             return
+        if base.local is not None:
+            self._local_attribute(node, base)
+            return
         member = self.sym.child(base.entry, node.attr)
         if not isinstance(member, Missing):
             self.ctx.checked += 1
@@ -566,6 +660,38 @@ class _Checker(ast.NodeVisitor):
             )
         self._report(node, member.certainty, "unknown_attribute", f"{owner['qualname']}.{node.attr}", message, suggestion)
 
+    def _local_attribute(self, node: ast.Attribute, base: Value) -> None:
+        local = base.local
+        assert local is not None
+        member = self._local_member(local, node.attr)
+        if member is None or (isinstance(member, Missing) and member.certainty == "unknown"):
+            self.ctx.unchecked += 1
+            return
+        self.ctx.checked += 1
+        if not isinstance(member, Missing):
+            self._note_lib(member)
+            if member.get("deprecated"):
+                self._report(node, "warning", "deprecated", member["qualname"],
+                             member.get("deprecated_note") or f"'{member['qualname']}' is deprecated.")
+            return
+        owner = self.sym.entry(self.sym.home(member.parent)) or member.parent
+        self._note_lib(owner)
+        what = "an instance of " if base.kind == "local_instance" else ""
+        suggestion = None
+        for b in local.bases:
+            suggestion = suggestion or self.sym.suggest(b, node.attr)
+        if member.certainty == "error":
+            message = (
+                f"'{node.attr}' does not exist on {what}'{local.name}': the class does not define it and "
+                f"its base '{owner['qualname']}' in {_lib_label(owner)} has no such member."
+            )
+        else:
+            message = (
+                f"'{node.attr}' is not defined by '{local.name}' nor declared by its base '{owner['qualname']}' "
+                f"in {_lib_label(owner)}; it only works if the base creates it dynamically (e.g. __getattr__)."
+            )
+        self._report(node, member.certainty, "unknown_attribute", f"{local.name}.{node.attr}", message, suggestion)
+
     # --------------------------------------------------------------- calls
     def visit_Call(self, node: ast.Call) -> None:
         func_name = node.func.id if isinstance(node.func, ast.Name) else None
@@ -576,6 +702,9 @@ class _Checker(ast.NodeVisitor):
         self.generic_visit(node)
         callee = self._type_of(node.func)
         if callee is None:
+            return
+        if callee.local is not None:
+            self.ctx.unchecked += 1  # a snippet class's own constructor / __call__
             return
         label = _dotted(node.func) or (callee.entry["qualname"])
         if callee.kind == "class":
@@ -669,12 +798,28 @@ class _Checker(ast.NodeVisitor):
                 )
 
     def _unexpected_kw(self, node: ast.Call, kw: str, label: str, where: str, accepted: list[str]) -> None:
-        close = difflib.get_close_matches(kw, accepted, n=1, cutoff=0.6)
         self._report(
             node, "error", "unexpected_keyword", f"{label}({kw}=...)",
             f"'{kw}' is not a parameter of {where}.",
-            close[0] if close else None,
+            _suggest_keyword(kw, accepted, label),
         )
+
+
+def _suggest_keyword(kw: str, accepted: list[str], label: str) -> str | None:
+    """The parameter a mistaken keyword most likely means.
+
+    A compound keyword whose parts are real parameters (``connect_timeout``
+    for ``Timeout(connect=..., timeout=...)``) means the part that is not
+    just the callable's own name; otherwise the closest spelling."""
+    callee = label.rsplit(".", 1)[-1].lower()
+    parts = [p for p in kw.lower().split("_") if p]
+    matching = [a for a in accepted if a.lower() in parts]
+    if len(matching) > 1:
+        matching = [a for a in matching if a.lower() != callee] or matching
+    if matching:
+        return matching[0]
+    close = difflib.get_close_matches(kw, accepted, n=1, cutoff=0.6)
+    return close[0] if close else None
 
 
 def api_check_code(conn, code: str, *, env_row: dict[str, Any], language: str = "python") -> dict[str, Any]:
@@ -773,13 +918,22 @@ def _check_typescript(conn, code: str, env_row: dict[str, Any]) -> dict[str, Any
                 unchecked += 1  # export list was capped; absence proves nothing
                 continue
             checked += 1
-            suggestion = difflib.get_close_matches(name, sorted(exported), n=1)
+            elsewhere = conn.execute(
+                "SELECT l.name FROM entries e JOIN libraries l ON l.id = e.library_id "
+                "WHERE e.name = ? AND e.parent_id IS NULL AND l.ecosystem = 'js' AND l.env_id = ? "
+                "AND l.id != ? AND l.status IN ('done', 'partial') LIMIT 1",
+                (name, env_row["id"], lib["id"]),
+            ).fetchone()
+            if elsewhere is not None:
+                # useFormStatus is react-dom's, not react's
+                message = f"'{name}' is not exported by '{pkg}' {lib['version']}; it is exported by '{elsewhere['name']}'."
+                suggestion_text = f'import {{ {name} }} from "{elsewhere["name"]}"'
+            else:
+                message = f"'{name}' is not exported by '{pkg}' {lib['version']}."
+                close = difflib.get_close_matches(name, sorted(exported), n=1)
+                suggestion_text = close[0] if close else None
             findings.append(
-                Finding(
-                    line, 0, "error", "unknown_attribute", f"{pkg}.{name}",
-                    f"'{name}' is not exported by '{pkg}' {lib['version']}.",
-                    suggestion[0] if suggestion else None,
-                ).to_dict()
+                Finding(line, 0, "error", "unknown_attribute", f"{pkg}.{name}", message, suggestion_text).to_dict()
             )
     return {
         "ok": not any(f["severity"] == "error" for f in findings),
