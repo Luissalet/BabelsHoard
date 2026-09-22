@@ -19,7 +19,8 @@ Your memory of a library mixes versions. The project's `.venv` /
 
 ## Order
 
-1. `docs_libraries()` shows environments (one is `default`) and what is
+1. `docs_libraries()` shows environments (`default_for` says which one
+   answers Python and which TypeScript when you omit `env`) and what is
    indexed. Unlisted installed packages are indexed on first use.
 2. `api_lookup("pkg.Class.method", env=...)`. Use `params[].required` and
    `kind` (keyword-only!) exactly as returned. On `found: false`, use one of
@@ -35,6 +36,8 @@ Your memory of a library mixes versions. The project's `.venv` /
 - `ok: true` with a large `unchecked` count means "not verified", not
   "correct": values of unknown type and dynamic code are skipped on purpose.
 - Guarded code (`try/except ImportError`, `hasattr(...)`) is not checked.
+- `no_python` means the env you passed has only `node_modules`: use the
+  Python env id the message lists, or omit `env`.
 - The first lookup of a big package can take several seconds - wait, do not
   retry in a loop. `babel_timeout` once: retry once.
 - Docset and markdown hits have `kind: "section"`: read them with

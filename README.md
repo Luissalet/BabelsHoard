@@ -30,22 +30,46 @@ counted as `unchecked`.
 ![Check code: response.jsonify() and client.post(..., retry=3) flagged against httpx 0.28.1, with the offending lines](docs/media/check-code.png)
 *Actual application, demo data. The snippet is parsed, never executed; `jsonify` is caught through the return type of `client.get` and the `with ... as client` binding.*
 
+## Use cases
+
+Each one was walked for real, in the browser and over MCP, on a FastAPI +
+React project with 228 installed packages
+([use cases](docs/USE_CASES.md), [usability report](docs/USABILITY_REPORT.md)):
+
+- **Register a big project** - paste its folder: the `.venv` and
+  `frontend/node_modules` are detected in under a second, the installed
+  packages are listed with exact versions, and runtime dependencies are
+  indexed in the background with visible progress (dev tools skipped).
+- **Look up an exact signature** - type `sqlalchemy.ext.asyncio.async_sessionmaker`
+  on Search and press *Look up*: the constructor parameters of the installed
+  SQLAlchemy, even though its first index pass stopped at the size cap.
+- **Check a snippet a model wrote** - Python (`httpx.AsyncClient(retries=3)`,
+  a deprecated `item.dict()` on your own pydantic model) and TypeScript
+  imports (`MagicWand` from `lucide-react`), each under its line.
+- **"Faustus, write it and prove it exists"** - the agent looks up
+  `httpx.AsyncClient.stream`, checks its endpoint, fixes the two errors from
+  the suggestions and gets a clean check in five calls.
+- **Review a whole module** - a correct 370-line service gives zero
+  findings; three introduced mistakes come back as errors with their lines.
+- **Search your own docs** - index the project's `docs/` folder from
+  Docsets and find "how do I start the backend" next to the API index.
+
 ## What is implemented
 
 | Area | Available now | Boundary |
 | --- | --- | --- |
-| Python indexing | Static indexing (griffe over source and `.pyi` stubs, project code never runs) of any registered interpreter's distributions and stdlib modules, on first need and cached per environment + package + version. Breadth-first, so the public API is indexed first; every object expanded once with its other public paths linked to it; bases and re-exports from other packages resolved; completeness recorded per module/class (dynamic namespaces, caps, compiled modules) | Caps per package: 15,000 entries, 1,500 parsed modules (test suites skipped), 600 modules from other packages; libraries over a cap are marked `partial` and their incomplete namespaces never produce errors. Compiled extensions without stubs are recorded as such, with no members. The project's own (not installed) modules are not indexed |
+| Python indexing | Static indexing (griffe over source and `.pyi` stubs, project code never runs) of any registered interpreter's distributions and stdlib modules, on first need and cached per environment + package + version. Breadth-first, so the public API is indexed first; every object expanded once with its other public paths linked to it; bases and re-exports from other packages resolved; completeness recorded per module/class (dynamic namespaces, caps, compiled modules, namespace sub-packages, stub names declared only with `@overload`); a namespace the cap left unexpanded is indexed the first time a lookup or check reaches it; every import name of a distribution indexed (pytest: `py` and `pytest`) | Caps per package for the first pass: 15,000 entries, 1,500 parsed modules (test suites skipped), 600 modules from other packages; libraries over a cap are marked `partial` and their incomplete namespaces never produce errors. Compiled extensions without stubs are recorded as such, with no members. The project's own (not installed) modules are not indexed |
 | Version tracking | The interpreter probe is cached until its site-packages changes; after an upgrade the next lookup indexes the new version and marks the old index `superseded` (kept only as "other versions") | Detection relies on site-packages folder timestamps; editable installs that change code in place keep the indexed version until re-indexed |
-| Code check (`api_check_code`) | Unknown modules/attributes, unexpected keywords, positional-only passed by keyword, too many positional, missing required, deprecated, with suggestions. Follows values through imports, assignments, annotations, return annotations, `Self`-returning methods, `with`/`async with` and `await`; receivers (instance/class/static/unbound) and constructors handled; overloads checked against their contract | Errors only for statically complete namespaces; `__getattr__`/`setattr(self, name)` classes and lazy modules produce warnings; unknown types, custom metaclasses, `__new__`, unknown decorators and guarded code are `unchecked`. TypeScript: named imports/re-exports only (v1) |
+| Code check (`api_check_code`) | Unknown modules/attributes, unexpected keywords, positional-only passed by keyword, too many positional, missing required, deprecated, with suggestions. Follows values through imports, assignments, annotations, return annotations, `Self`-returning methods, `with`/`async with` (including `@contextmanager` functions such as `client.stream(...)`), `await` and classes defined in the snippet (through their indexed bases); receivers (instance/class/static/unbound) and constructors handled; overloads checked against the ones that fit the call; PEP 702 `@deprecated`. Without `env`, Python code is checked against the newest project with an interpreter and TypeScript against the newest with `node_modules` | Errors only for statically complete namespaces; `__getattr__`/`setattr(self, name)` classes and lazy modules produce warnings; unknown types, custom metaclasses, `__new__`, unknown decorators and guarded code are `unchecked`. TypeScript: named imports/re-exports only (v1) |
 | Lookup (`api_lookup`) | Signature, parameters (type, default, required, kind, description), return type, summary, first 1,500 characters of the docstring, members, source file:line, library version; `found: false` with real neighbouring names and whether absence is certain | Python and npm packages with type declarations |
-| JS/TS indexing | TypeScript compiler API over a package's declarations (`types`/`typings`, `exports[...].types`, `index.d.ts`, `@types/<name>`): exports, one level of members, JSDoc, `@deprecated`; indexed on first use | Needs Node.js; at most 500 exports per package (then `partial`) |
-| Search | SQLite FTS5 with bm25 weights (name, qualname, signature, summary, doc), identifier-aware tokens, filters, one hit per definition, trigram "did you mean" | Lexical, no embeddings |
+| JS/TS indexing | TypeScript compiler API over a package's declarations (`types`/`typings`, `exports[...].types`, `index.d.ts`, `@types/<name>`): exports, one level of members, JSDoc, `@deprecated`; indexed on first use | Needs Node.js; types and docs for the first 500 exports of a package, names only for the rest (up to 50,000) |
+| Search | SQLite FTS5 with bm25 weights (name, qualname, signature, summary, doc), identifier-aware tokens, filters, one hit per definition under its shortest path, re-ranked so callables and classes whose name matches come before attributes and constants, trigram "did you mean"; a dotted name offers an exact lookup that indexes the package on the spot | Lexical, no embeddings; only what is indexed |
 | Offline docsets | DevDocs catalogue and install (HTML converted to Markdown, split by anchors) as a background job | Needs the network, only when the user or the model asks; converter is small, not a full HTML renderer |
 | Markdown folders | `.md`/`.mdx`/`.rst`/`.txt` split by heading (fenced code aware, rst underlines) | Dependency/VCS/build folders skipped; 2,000 files, 2 MB per file |
 | Assistant audit | Every `/api/agent/*` call (tool, argument summary, duration, result) in "Assistant activity"; the UI uses its own endpoints so only the model's calls appear | Local only |
 | Ask the docs | Search screen: a question is answered from the top search hits by the shared `llm` model, with citations `[id]` that link back to the exact entry (and a Sources list; an id the model invented is shown struck through). When the shared `embeddings` model resolves, the top 50 lexical hits are re-ranked hybrid (reciprocal-rank fusion of the lexical and embedding orders, "semantic re-rank on" badge); otherwise lexical order | Answers only from what is already indexed; a UI feature, not an MCP tool; disabled with the reason shown when no model resolves |
 | Shared model backend | Settings -> Models: which server/model is used for `llm`/`embeddings` right now and why, a Re-check button, manual overrides (Faustus URL/token, per-capability URL/model) | Read [Shared models](#shared-models) below |
-| UI | Search, symbol panel, Libraries (installed packages with index status), Check code (line numbers, findings under each line), Docsets, Assistant activity, Settings; light/dark, English/Spanish | Single user, local browser |
+| UI | Search, symbol panel, Libraries (installed packages with index status, filling in while the dependency job runs; default environment per language), Check code (line numbers, findings under each line), Docsets (with *Index a folder*), Assistant activity (which environment answered each call), Settings; light/dark, English/Spanish | Single user, local browser; backend messages (findings, notes) are in English |
 
 ## Shared models
 
@@ -139,7 +163,7 @@ Modules, data model and the decisions behind the checker:
 .venv\Scripts\python -m pytest -q
 ```
 
-**126 tests, 50-85 s in a shared 2-CPU container, offline.** They cover: the
+**159 tests, 60-135 s in a shared 2-CPU container, offline.** They cover: the
 browser guard and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
 long tool runs; indexing of real installed packages (httpx, pydantic,
@@ -156,14 +180,24 @@ and the shared model backend (`/api/backend*`, config persistence that never
 leaks the Faustus token, cleared fields, invalid values rejected before
 they are saved, a broken `backend.json` at startup, and "Ask the docs" - disabled path, empty query,
 no matching entries, citation filtering, hybrid re-rank, and a failed model
-call - all against a fake Link, offline).
+call - all against a fake Link, offline); and one regression test per fixed
+finding of the [usability report](docs/USABILITY_REPORT.md)
+(`tests/test_usability_fixes.py`: per-language default environments,
+multi-package distributions, compiled submodules and namespace packages,
+overload-only stubs, on-demand expansion past the cap, context-manager
+values, snippet classes, fitting overloads, search ranking, large JS export
+lists, and that no parsed package stays in memory after indexing).
 
 False-positive harness: `scripts/check_corpus.py` runs the checker over
 the source of installed packages, which works, so any error it reports is
 suspect. On 300 files sampled from starlette, fastapi, httpx, uvicorn, mcp,
 anyio, pydantic-settings, click, jsonschema, griffe, pandas and requests it
 reports no errors and no warnings (the pandas/requests sample: 4,954
-verified checks, 11,551 left unchecked). Four false-positive classes it
+verified checks, 11,551 left unchecked). On 110 files from SQLAlchemy,
+pydantic-settings, sse-starlette, tenacity, fastembed, psutil, chromadb,
+aiosqlite, alembic, PyJWT, pytest, attrs and numpy (2,880 verified checks)
+it reports 3 errors, all genuine: chromadb's distributed-mode code imports
+`*_pb2` modules its wheel does not ship. Seven false-positive classes it
 found are fixed and covered by tests.
 
 `npm run build` in `frontend/` passes with zero TypeScript errors. The

@@ -30,22 +30,50 @@ no puede demostrar se cuenta como `unchecked` (sin verificar).
 ![Comprobar código: response.jsonify() y client.post(..., retry=3) marcados contra httpx 0.28.1, con las líneas afectadas](docs/media/check-code.png)
 *Aplicación real, datos de demostración. El fragmento se analiza, nunca se ejecuta; `jsonify` se detecta gracias al tipo que devuelve `client.get` y a la variable de `with ... as client`.*
 
+## Casos de uso
+
+Cada uno se recorrió de verdad, en el navegador y por MCP, sobre un proyecto
+FastAPI + React con 228 paquetes instalados
+([casos de uso](docs/USE_CASES.md), [informe de usabilidad](docs/USABILITY_REPORT.md)):
+
+- **Registrar un proyecto grande**: pegas su carpeta y en menos de un
+  segundo se detectan el `.venv` y `frontend/node_modules`, se listan los
+  paquetes instalados con su versión exacta y las dependencias de ejecución
+  se indexan en segundo plano con el progreso a la vista (sin las
+  herramientas de desarrollo).
+- **Consultar una firma exacta**: escribes `sqlalchemy.ext.asyncio.async_sessionmaker`
+  en Buscar y pulsas *Consultar*: los parámetros del constructor del
+  SQLAlchemy instalado, aunque la primera pasada del índice se detuviera en
+  el límite de tamaño.
+- **Comprobar el código que ha escrito un modelo**: Python
+  (`httpx.AsyncClient(retries=3)`, un `item.dict()` obsoleto en tu propio
+  modelo de pydantic) e importaciones de TypeScript (`MagicWand` de
+  `lucide-react`), cada aviso bajo su línea.
+- **«Faustus, escríbelo y demuestra que existe»**: el agente consulta
+  `httpx.AsyncClient.stream`, comprueba su endpoint, corrige los dos errores
+  con las sugerencias y obtiene una comprobación limpia en cinco llamadas.
+- **Revisar un módulo entero**: un servicio correcto de 370 líneas no da
+  ningún aviso; tres errores introducidos vuelven como errores con su línea.
+- **Buscar en tu propia documentación**: indexas la carpeta `docs/` del
+  proyecto desde Docsets y encuentras «cómo arranco el backend» junto al
+  índice de APIs.
+
 ## Qué está implementado
 
 | Área | Disponible ahora | Límite |
 | --- | --- | --- |
-| Indexado de Python | Indexado estático (griffe sobre el código fuente y los stubs `.pyi`; el código del proyecto nunca se ejecuta) de las distribuciones y los módulos de la biblioteca estándar de cualquier intérprete registrado, cuando hace falta por primera vez y en caché por entorno + paquete + versión. En anchura, para que la API pública se indexe primero; cada objeto se expande una sola vez y sus otras rutas públicas apuntan a él; se resuelven clases base y reexportaciones de otros paquetes; se registra qué módulos y clases se conocen por completo (espacios de nombres dinámicos, límites, módulos compilados) | Límites por paquete: 15.000 entradas, 1.500 módulos analizados (sin las baterías de tests), 600 módulos de otros paquetes; una librería que los supera queda como `partial` y sus espacios de nombres incompletos nunca generan errores. Las extensiones compiladas sin stubs se registran como tales, sin miembros. No se indexan los módulos propios del proyecto que no estén instalados |
+| Indexado de Python | Indexado estático (griffe sobre el código fuente y los stubs `.pyi`; el código del proyecto nunca se ejecuta) de las distribuciones y los módulos de la biblioteca estándar de cualquier intérprete registrado, cuando hace falta por primera vez y en caché por entorno + paquete + versión. En anchura, para que la API pública se indexe primero; cada objeto se expande una sola vez y sus otras rutas públicas apuntan a él; se resuelven clases base y reexportaciones de otros paquetes; se registra qué módulos y clases se conocen por completo (espacios de nombres dinámicos, límites, módulos compilados, subpaquetes de espacio de nombres, nombres de stubs declarados solo con `@overload`); un espacio de nombres que el límite dejó sin expandir se indexa la primera vez que una consulta o comprobación llega a él; se indexan todos los nombres de importación de una distribución (pytest: `py` y `pytest`) | Límites por paquete en la primera pasada: 15.000 entradas, 1.500 módulos analizados (sin las baterías de tests), 600 módulos de otros paquetes; una librería que los supera queda como `partial` y sus espacios de nombres incompletos nunca generan errores. Las extensiones compiladas sin stubs se registran como tales, sin miembros. No se indexan los módulos propios del proyecto que no estén instalados |
 | Seguimiento de versiones | El sondeo del intérprete se reutiliza hasta que cambia su site-packages; tras una actualización, la siguiente consulta indexa la versión nueva y marca la anterior como `superseded` (solo se muestra como «otras versiones») | La detección se basa en la fecha de modificación de las carpetas de site-packages; las instalaciones editables que cambian el código sin reinstalar conservan lo indexado hasta reindexar |
-| Comprobación de código (`api_check_code`) | Módulos y atributos inexistentes, argumentos por nombre inesperados, parámetros solo posicionales pasados por nombre, demasiados posicionales, obligatorios que faltan y API obsoletas, con sugerencias. Sigue los valores a través de importaciones, asignaciones, anotaciones, tipos de retorno, métodos que devuelven `Self`, `with`/`async with` y `await`; distingue receptores (instancia, clase, estático, sin enlazar) y constructores; las sobrecargas se comprueban contra su contrato | Errores solo en espacios de nombres completos; las clases con `__getattr__` o `setattr(self, nombre)` y los módulos perezosos dan avisos; los tipos desconocidos, metaclases propias, `__new__`, decoradores desconocidos y el código protegido quedan sin verificar. TypeScript: solo importaciones y reexportaciones con nombre (v1) |
+| Comprobación de código (`api_check_code`) | Módulos y atributos inexistentes, argumentos por nombre inesperados, parámetros solo posicionales pasados por nombre, demasiados posicionales, obligatorios que faltan y API obsoletas, con sugerencias. Sigue los valores a través de importaciones, asignaciones, anotaciones, tipos de retorno, métodos que devuelven `Self`, `with`/`async with` (también funciones `@contextmanager` como `client.stream(...)`), `await` y clases definidas en el propio fragmento (a través de sus bases indexadas); distingue receptores (instancia, clase, estático, sin enlazar) y constructores; las sobrecargas se comprueban contra las que encajan con la llamada; `@deprecated` de PEP 702. Sin `env`, el código Python se comprueba contra el proyecto más reciente con intérprete y el TypeScript contra el más reciente con `node_modules` | Errores solo en espacios de nombres completos; las clases con `__getattr__` o `setattr(self, nombre)` y los módulos perezosos dan avisos; los tipos desconocidos, metaclases propias, `__new__`, decoradores desconocidos y el código protegido quedan sin verificar. TypeScript: solo importaciones y reexportaciones con nombre (v1) |
 | Consulta (`api_lookup`) | Firma, parámetros (tipo, valor por defecto, obligatorio, tipo de paso, descripción), tipo de retorno, resumen, los primeros 1.500 caracteres del docstring, miembros, archivo:línea y versión de la librería; `found: false` con los nombres reales más parecidos y si la ausencia es segura | Paquetes de Python y paquetes npm con declaraciones de tipos |
-| Indexado de JS/TS | API del compilador de TypeScript sobre las declaraciones del paquete (`types`/`typings`, `exports[...].types`, `index.d.ts`, `@types/<nombre>`): exportaciones, un nivel de miembros, JSDoc y `@deprecated`; se indexa al primer uso | Requiere Node.js; como máximo 500 exportaciones por paquete (después, `partial`) |
-| Búsqueda | FTS5 de SQLite con pesos bm25 (nombre, ruta, firma, resumen, documentación), tokens que entienden identificadores, filtros, un resultado por definición y sugerencias por trigramas | Léxica, sin embeddings |
+| Indexado de JS/TS | API del compilador de TypeScript sobre las declaraciones del paquete (`types`/`typings`, `exports[...].types`, `index.d.ts`, `@types/<nombre>`): exportaciones, un nivel de miembros, JSDoc y `@deprecated`; se indexa al primer uso | Requiere Node.js; tipos y documentación de las primeras 500 exportaciones de un paquete, solo nombres del resto (hasta 50.000) |
+| Búsqueda | FTS5 de SQLite con pesos bm25 (nombre, ruta, firma, resumen, documentación), tokens que entienden identificadores, filtros, un resultado por definición con su ruta más corta, reordenada para que las funciones y clases cuyo nombre coincide vayan antes que atributos y constantes, y sugerencias por trigramas; un nombre con puntos ofrece una consulta exacta que indexa el paquete en el momento | Léxica, sin embeddings; solo lo indexado |
 | Documentación sin conexión | Catálogo e instalación de DevDocs (HTML convertido a Markdown y dividido por anclas) como tarea en segundo plano | Necesita red, solo cuando lo pide el usuario o el modelo; el conversor es pequeño, no un renderizador HTML completo |
 | Carpetas de Markdown | `.md`/`.mdx`/`.rst`/`.txt` divididos por encabezado (respetando bloques de código y subrayados de rst) | Se omiten carpetas de dependencias, control de versiones y compilación; 2.000 archivos y 2 MB por archivo |
 | Auditoría del asistente | Cada llamada a `/api/agent/*` (herramienta, resumen de argumentos, duración, resultado) en «Actividad del asistente»; la interfaz usa sus propios endpoints, así que solo aparecen las llamadas del modelo | Solo local |
 | Preguntar a la documentación | Pantalla de Búsqueda: una pregunta se responde a partir de los mejores resultados de búsqueda con el modelo de `llm` compartido, con citas `[id]` que enlazan a la entrada exacta (y una lista de Fuentes; un id inventado por el modelo aparece tachado). Cuando el modelo de `embeddings` compartido resuelve, los 50 mejores resultados léxicos se reordenan de forma híbrida (fusión por rango recíproco del orden léxico y el de embeddings, distintivo «reordenación semántica activa»); si no, orden léxico | Solo responde con lo ya indexado; es una función de la interfaz, no una herramienta MCP; se desactiva mostrando el motivo cuando ningún modelo resuelve |
 | Backend de modelos compartido | Ajustes → Modelos: qué servidor/modelo se usa ahora mismo para `llm`/`embeddings` y por qué, un botón «Comprobar de nuevo», ajustes manuales (URL/token de Faustus, URL/modelo por capacidad) | Ver [Modelos compartidos](#modelos-compartidos) más abajo |
-| Interfaz | Búsqueda, panel de símbolo, Librerías (paquetes instalados con su estado de indexado), Comprobar código (números de línea, avisos bajo cada línea), Docsets, Actividad del asistente y Ajustes; tema claro/oscuro, inglés/español | Un solo usuario, navegador local |
+| Interfaz | Búsqueda, panel de símbolo, Librerías (paquetes instalados con su estado de indexado, que se rellena mientras corre la tarea de dependencias; entorno predeterminado por lenguaje), Comprobar código (números de línea, avisos bajo cada línea), Docsets (con *Indexar una carpeta*), Actividad del asistente (qué entorno respondió a cada llamada) y Ajustes; tema claro/oscuro, inglés/español | Un solo usuario, navegador local; los mensajes del backend (avisos, notas) están en inglés |
 
 ## Modelos compartidos
 
@@ -144,7 +172,7 @@ las decisiones detrás del comprobador:
 .venv\Scripts\python -m pytest -q
 ```
 
-**126 tests, entre 50 y 85 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
+**159 tests, entre 60 y 135 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
 protección frente al navegador y el confinamiento de archivos estáticos
 (intentos de salir de la carpeta), la forma de los errores, las conexiones
 por hilo y que `/api/health` responda mientras corre una herramienta larga;
@@ -165,7 +193,15 @@ valores no válidos rechazados antes de guardarse, un `backend.json` roto al
 arrancar, y «Preguntar a la
 documentación» - desactivada, pregunta vacía, sin resultados, filtrado de
 citas, reordenación híbrida y una llamada al modelo fallida - todo contra
-un Link simulado, sin red).
+un Link simulado, sin red); y un test de regresión por cada hallazgo
+corregido del [informe de usabilidad](docs/USABILITY_REPORT.md)
+(`tests/test_usability_fixes.py`: entornos predeterminados por lenguaje,
+distribuciones con varios paquetes, submódulos compilados y subpaquetes de
+espacio de nombres, stubs solo con sobrecargas, expansión bajo demanda más
+allá del límite, valores de gestores de contexto, clases del propio
+fragmento, sobrecargas que encajan, orden de la búsqueda, listas grandes de
+exportaciones JS y que ningún paquete analizado se quede en memoria tras
+indexarlo).
 
 Banco de falsos positivos: `scripts/check_corpus.py` pasa el comprobador
 por el código de paquetes instalados, que funciona, así que cualquier error
@@ -173,8 +209,12 @@ que marque es sospechoso. En 300 archivos tomados de starlette, fastapi,
 httpx, uvicorn, mcp, anyio, pydantic-settings, click, jsonschema, griffe,
 pandas y requests no marca ningún error ni aviso (en la muestra de
 pandas/requests: 4.954 comprobaciones verificadas y 11.551 sin verificar).
-Las cuatro clases de falsos positivos que encontró están corregidas y
-cubiertas por tests.
+En 110 archivos de SQLAlchemy, pydantic-settings, sse-starlette, tenacity,
+fastembed, psutil, chromadb, aiosqlite, alembic, PyJWT, pytest, attrs y
+numpy (2.880 comprobaciones verificadas) marca 3 errores, todos reales: el
+código del modo distribuido de chromadb importa módulos `*_pb2` que su
+wheel no incluye. Las siete clases de falsos positivos que encontró están
+corregidas y cubiertas por tests.
 
 `npm run build` en `frontend/` termina sin errores de TypeScript. El primer
 arranque de `scripts/start.ps1` (venv, instalación del bloqueo, compilación

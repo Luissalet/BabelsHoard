@@ -4,9 +4,10 @@ First real use of Babel's Hoard, walking every scenario in
 [USE_CASES.md](USE_CASES.md) twice: as a person in the browser (Playwright,
 screenshots read one by one, English at 1280x800 and Spanish at 1920x1080)
 and as an agent over the real MCP stdio protocol
-([`scripts/agent_walkthrough.py`](../scripts/agent_walkthrough.py)). This
-pass records findings only; fixes come in the next pass, and each one will
-be marked here when it lands.
+([`scripts/agent_walkthrough.py`](../scripts/agent_walkthrough.py)). The
+first pass recorded the findings below; the fixes and a second walk of every
+scenario (same data, same scripts, a fresh data folder) are in
+[Second pass](#second-pass-after-the-fixes) at the end.
 
 ## Test setup
 
@@ -301,3 +302,67 @@ package exports, say which.
 - Docset download/install (network) and dark mode screenshots.
 - Faustus itself: the listing truncation was simulated by the walkthrough
   script (first line, 120 characters), not observed in Faustus.
+
+## Second pass (after the fixes)
+
+Same project and scripts, fresh data folder, in English at 1280x800 and in
+Spanish at 1920x1080 (screenshots read one by one), and the agent script
+over MCP stdio. Every regression is pinned by a test in
+[`tests/test_usability_fixes.py`](../tests/test_usability_fixes.py).
+
+| Scenario | Person | Agent | Verdict |
+| --- | --- | --- | --- |
+| UC1 register the big project | 0.35-0.46 s; the root finds `frontend/node_modules` and is tagged *default · Python* and *default · TypeScript*; 228 packages in 0.3 s; the 46-dependency job (dev tools listed as skipped) fills "Indexed here" while it runs; search answers in 0.1-0.2 s meanwhile | - | works |
+| UC2 look up `async_sessionmaker` | Typing the dotted name offers *Look up*; the panel shows the constructor of SQLAlchemy 2.0.54 (34-40 s the first time: SQLAlchemy indexed plus the capped namespace expanded while the dependency job was running; instant afterwards); "async sessionmaker" then ranks the class first | - | works (slow first time) |
+| UC3 check a model-written snippet | 2 of 4 caught: `retries=3` (error) and `item.dict()` (deprecated, with the `model_dump` hint); `psutil.gpu_percent()` stays unverifiable (A4), `class Config: orm_mode` is out of reach | - | works with caveat |
+| UC4 write + prove an httpx endpoint | - | 5 calls; the hallucinated `aiter_text_lines` is now caught through `client.stream(...) as response`; both errors fixed from the suggestions; final check clean | works |
+| UC5 review the 370-line module | - | 0 findings on the correct module (177 verified, 143 unverifiable); the 3 introduced mistakes reported with lines, `connect_timeout` now suggests `connect`; lxml / numpy `Generator.normal` / chromadb namespace imports clean; `@pytest.fixtur` and `pytest.raises(..., matchh=)` both reported | works |
+| UC6 learn fastembed, write, check | - | `docs_search("query embedding")` puts `fastembed.TextEmbedding.query_embed` first; the written file checks clean | works |
+| UC7 check React imports | The root registration alone is enough; `useFormStatus` and `MagicWand` flagged; registering `frontend` separately keeps Python on the root; choosing the frontend-only environment for Python shows why and disables Check | Python check against it: `no_python` naming the right ids; without env the Python default is unchanged | works |
+| UC8 search my own docs | Docsets -> *Index a folder*: 7 sections from 2 files; "how do I start the backend" finds `SETUP.md#Start the backend` and opens it | Same, via `docs_index_folder` + `docs_search` + `docs_read` | works |
+
+Agent totals: 28 calls, 30,616 characters of results (~7.7k tokens), largest
+`docs_libraries` at 4,667 characters (was 7,855); no image blocks; the
+walkthrough reported no problems. No console errors in either browser run.
+The app process stayed at 200-250 MB during and after the dependency job
+(1.4-1.6 GB before the fix).
+
+### Status of each finding
+
+| Finding | Status |
+| --- | --- |
+| B1 frontend-only env becomes the default | **Fixed.** Frontend `node_modules` detected one level down; defaults per language; re-registering makes the project the default again and keeps its id; a Python check against a `node_modules`-only env is a `no_python` error listing the Python envs; the Check screen picks the env per language, explains a mismatch and disables Check |
+| B2 capped namespaces missing (`sqlalchemy.ext.asyncio`) | **Fixed.** Namespaces the cap left unexpanded are indexed on the first lookup or check that reaches them and merged into the same library |
+| B3 pytest "not installed" | **Fixed.** One library per import name of a distribution; siblings are not superseded; the UI's *Index* button indexes every import name and the Libraries list says which is which. Also fixed on the way: stubs that re-export another package (`attrs` -> `attr`) failed to index at all |
+| B4 first description line | **Fixed** as proposed; tested (at most 110 characters, a whole statement, Spanish trigger words) |
+| B5 compiled submodules / namespace packages | **Fixed**; recorded as unverifiable modules |
+| B6 overload-only stub methods | **Fixed**; indexed with their overload contract |
+| A1 eager job cost and memory | **Fixed**: dev groups/files and tools skipped (still indexed on demand); the memory growth was a leak (griffe's dataclass cache and our docstring cache kept every parsed package alive), now cleared after each library. Not done: letting on-demand indexing jump ahead of the job (it waits for at most the library being indexed) |
+| A2 `async with client.stream(...)` | **Fixed** (`@(async)contextmanager` yields) |
+| A3 pydantic v1 idioms | **Partly fixed**: snippet classes follow their bases and PEP 702 `@deprecated` is read, so `item.dict()` is reported; `class Config: orm_mode` is not |
+| A4 `psutil.gpu_percent()` | **Not fixed.** psutil also extends `__all__` from a platform module chosen at import time; proving absence there needs more than a prefix rule, so it stays unverifiable rather than risk false errors |
+| A5 Libraries not refreshing during the job | **Fixed** |
+| A6 no UI to index a Markdown folder | **Fixed** (*Index a folder* on Docsets) |
+| A7 `unknown_environment` without next step | **Fixed** (says to register with `docs_add_environment` and lists known ids) |
+| A8 large default results | **Fixed**: `docs_libraries` pages 15 by default (the per-library notes were already not in the agent listing) |
+| A9 search ranks constants first | **Fixed** (kind, name match, depth and legacy-path re-ranking; exact identifiers always considered); also fixed: an older, slower search answer could replace the current one in the UI |
+| A10 capped JS export lists | **Fixed** (names past 500 exports indexed without types) |
+| A11 weak suggestions | **Fixed** for compound keywords (`connect_timeout` -> `connect`) and for a JS name exported by another *indexed* package; `useFormStatus` still suggests `useState` until `react-dom` has been indexed |
+| C1 "1 errors" | **Fixed** |
+| C2 English strings in the Spanish UI | **Partly fixed**: kind badges and filters translated, `<html lang>` follows the UI; finding messages, job progress and library notes come from the backend in English |
+| C3 tagline wraps | **Fixed** (shorter tagline, one line at both widths) |
+| C4 activity without the environment | **Fixed** (each call's summary names the environment that answered) |
+
+New in the second pass, found by the false-positive harness on `_pytest`:
+`logging.LogRecord.message` (assigned by `Formatter.format` on the record,
+declared by no class) was an error; attributes a module assigns on other
+objects are now recorded on its classes. The harness over 110 files of the
+large dependency stack (SQLAlchemy, pydantic-settings, sse-starlette, tenacity,
+fastembed, psutil, chromadb, aiosqlite, alembic, PyJWT, pytest, attrs,
+numpy) now reports 3 errors, all genuine (`chromadb.proto.*_pb2` modules its
+wheel does not ship).
+
+Still not tested: the Windows launchers and paths, "Ask the docs" with a
+real model, docset downloads, dark mode, and Faustus's own tool listing
+(simulated by the walkthrough).
+
