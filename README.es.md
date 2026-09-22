@@ -280,7 +280,7 @@ corregidas y cubiertas por tests.
 arranque de `scripts/start.ps1` (venv, instalación del bloqueo, compilación
 de la interfaz, arranque, espera a `/api/health` y detección de una
 instancia ya en marcha) se ha ejecutado con PowerShell 7 en Linux. La
-[integración continua](.github/workflows/ci.yml) pasa los tests en Ubuntu y
+[integración continua](.github/workflows/ci.yml) ejecuta los tests en Ubuntu y
 Windows con Python 3.11, 3.12 y 3.13, compila la interfaz y, en
 `windows-latest`, arranca la aplicación con `start.ps1` y la detiene con
 `stop.ps1`.
