@@ -32,10 +32,19 @@ import FastAPI, so they are tested directly and offline.
 
 ## Data model (SQLite, WAL)
 
-- `environments`: registered interpreter and/or `node_modules`. The id is a
-  hash of the two paths, so registering again is idempotent. The default
-  environment is the most recently registered non-builtin one.
-- `libraries`: `(ecosystem, name, version, source)`. `status` is
+- `environments`: registered interpreter and/or `node_modules` (a project
+  root also finds `frontend/`, `web/`, `client/`, `ui/`, `webapp/` or
+  `app/` `node_modules`). The id is a hash of the two paths; the same
+  interpreter registered again keeps its id (and gains a `node_modules`
+  found later). `created_at` is the time of the latest registration. The
+  default is per language: for Python the most recently registered project
+  with an interpreter, for TypeScript the most recent with `node_modules`;
+  a Python check against a `node_modules`-only environment is a `no_python`
+  error rather than an all-unchecked "ok".
+- `libraries`: `(ecosystem, name, version, source)`; a distribution that
+  ships several import names (pytest: `py` and `pytest`) has one library
+  per import name, and siblings of the same version never supersede each
+  other. `status` is
   `indexing | done | partial | error | superseded`. `partial` means a size
   cap was hit (the note says which); `superseded` is an older installed
   version kept only for "other versions" and never used for answers.
@@ -76,7 +85,12 @@ library is a single short transaction - rows are computed first, then
    go the other way (`index_python_dependency`).
 3. **Loading.** A `griffe.GriffeLoader` subclass parses source and `.pyi`
    stubs (`allow_inspection=False`: nothing executes), skips `tests`/`test`
-   folders, and stops after 1,500 modules of the package. Other packages are
+   folders, and stops after 1,500 modules of the package. When griffe's stub
+   merge needs another package (`attrs/__init__.pyi` re-exports `attr`),
+   that package is loaded first and the load retried. The memo caches that
+   hold griffe objects (including griffe's own dataclass cache) are cleared
+   after each library, so a long dependency job does not keep every parsed
+   package in memory. Other packages are
    loaded into the same collection only when needed to resolve a base class
    or a re-export (at most 16 packages, 600 modules); imported helpers that a
    module does not re-export (`from warnings import warn` under an
@@ -88,8 +102,19 @@ library is a single short transaction - rows are computed first, then
    members and public `self.x = ...` assignments made outside `__init__`.
    `__init__`, `__call__`, `__enter__` and `__aenter__` are kept (for
    constructor, call and context-manager checks); other private names only
-   when listed in `__all__`. Cap: 15,000 entries; namespaces not expanded
-   because of the cap are flagged, the library becomes `partial`.
+   when listed in `__all__`. Submodules griffe does not list - compiled
+   extensions without stubs (`lxml/etree.*.so`) and namespace sub-packages
+   (a folder without `__init__.py`, `chromadb/api/models`) - are recorded as
+   unverifiable modules. A name declared only with `@overload` in a stub
+   (numpy's `Generator.normal`) is recorded through its last overload with
+   all overloads as its contract. Cap: 15,000 entries; namespaces not
+   expanded because of the cap are flagged, the library becomes `partial`.
+   **On-demand expansion:** when a lookup or a check reaches such a
+   namespace (`sqlalchemy.ext.asyncio`), `expand_on_demand` parses the
+   package again (the submodule path is parsed even past the module budget)
+   and walks that subtree, pointing at objects already expanded elsewhere,
+   and merges the rows into the same library; so the cap bounds the first
+   pass, not what can be answered.
 5. **Completeness facts** (`meta_json`, see the `indexing.py` docstring):
    - modules: `dyn=1` for star-imports from compiled or unloaded modules,
      `globals()`/`vars()`/`sys.modules[...]` writes, `@enum.global_enum`
@@ -115,9 +140,12 @@ library is a single short transaction - rows are computed first, then
      decorator may change the signature (known transparent ones such as
      `functools.wraps`, `lru_cache`, `property`, docstring appenders are
      trusted; `deprecate_kwarg`-style renamers are not), overload contracts
-     (`ovn`/`ovk`), async, and the returned class (`ret`, `rself`).
-   - `nx`/`trunc`/`unres`/`compiled`: not expanded, cut by the cap, an alias
-     griffe could not resolve (`os.path`), a compiled module without stubs.
+     (`ovn`/`ovk`), async, the returned class (`ret`, `rself`), the class an
+     `@(async)contextmanager` yields (`cm`, from `-> AsyncIterator[T]`), and
+     PEP 702 `@deprecated(...)` (pydantic 2's `BaseModel.dict`).
+   - `nx`/`trunc`/`unres`/`compiled`/`ns`: not expanded, cut by the cap, an
+     alias griffe could not resolve (`os.path`), a compiled module without
+     stubs, a namespace sub-package.
 6. **Freshness.** `current_library` computes the library id for the
    version installed now; if it is not indexed it indexes it and marks
    older versions of the same distribution `superseded`. Imports that are
@@ -138,8 +166,12 @@ both use it, so they never disagree.
 
 An `ast.NodeVisitor` evaluates expressions to `Value`s (module, class,
 instance, callable with its receiver) using imports, assignments,
-annotations, return annotations, `Self`, `__enter__`/`__aenter__` and
-`await`. Any store to a name forgets it (assignments of unknown values,
+annotations, return annotations, `Self`, `__enter__`/`__aenter__`,
+context-manager functions (`with client.stream(...) as response`) and
+`await`. A class defined in the snippet whose bases are all indexed classes
+(and that has no metaclass, decorators other than `dataclass`, or dynamic
+attribute hooks) is followed too: names its body does not define are looked
+up on the bases (`item.dict()` on `class Item(BaseModel)`). Any store to a name forgets it (assignments of unknown values,
 parameters, loop and comprehension targets, `except ... as`, `match`
 captures, `global`), and so does an `isinstance`/`issubclass`/`type` check
 on it (narrowing to a subclass); function and class bodies get a copy of the
@@ -157,8 +189,15 @@ packages as a false-positive harness (any error there is suspect).
 
 TypeScript (v1): named imports and re-exports are matched against the
 top-level exports of the installed package's declarations (indexed on
-first use); capped export lists and packages that are not installed are
-unchecked.
+first use). The first 500 exports are indexed with types and docs, the rest
+(up to 50,000) by name, so large icon libraries stay checkable; a name
+another installed package exports is reported with that package. Packages
+that are not installed are unchecked.
+
+Search ranks FTS5 bm25 hits again by kind (callables and classes before
+attributes, constants last), by how well the entry's own name matches the
+query words, by path depth and away from `v1`/`deprecated`/private paths;
+an exact identifier query always considers every entry with that name.
 
 ## HTTP layer
 

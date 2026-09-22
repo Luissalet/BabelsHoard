@@ -1305,3 +1305,10 @@ table.params-table {
   padding: 10px 14px;
   margin-bottom: 8px;
 }
+
+/* Environment labels are full project paths: keep the Check button on the
+   same row instead of letting the longest path decide the layout. */
+.toolbar .field .select {
+  max-width: min(560px, 48vw);
+  text-overflow: ellipsis;
+}

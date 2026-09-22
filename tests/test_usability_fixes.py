@@ -40,6 +40,24 @@ def test_b3_pytest_fixture_is_found_after_the_dependency_job(conn, builtin_env, 
     indexing.index_python_dependency(conn, env=builtin_env, probe=probe, dist_name="pytest")
     found = search.lookup_with_lazy_index(conn, "pytest.fixture", env=builtin_env["id"])
     assert found["found"] and found["library"].startswith("pytest@"), found
+    code = (
+        "import pytest\n"
+        "@pytest.fixtur\n"
+        "def client():\n"
+        "    return 1\n"
+        "def test_bad():\n"
+        "    with pytest.raises(ValueError, matchh='bad'):\n"
+        "        raise ValueError('bad')\n"
+        "    with pytest.raises(ValueError, match='bad'):\n"
+        "        raise ValueError('bad')\n"
+        "    pytest.raises(ValueError, int, 'x', base=10)\n"
+    )
+    result = checker.api_check_code(conn, code, env_row=builtin_env)
+    # raises(E, match=...) cannot be the legacy raises(E, func, *args, **kwargs)
+    # overload, so its **kwargs no longer hides the misspelled keyword
+    assert [(f["line"], f["code"], f.get("suggestion")) for f in result["findings"]] == [
+        (2, "unknown_attribute", "fixture"), (6, "unexpected_keyword", "match"),
+    ]
 
 
 # --------------------------------------------------------------------- B1 --
@@ -408,3 +426,31 @@ def test_a11_js_name_exported_by_another_installed_package(conn, tmp_path):
     code = 'import { useThing, useFormThing } from "core-lib";\n'
     finding = checker.api_check_code(conn, code, env_row=env, language="typescript")["findings"][0]
     assert "exported by 'dom-lib'" in finding["message"]
+
+
+def test_a1_no_parsed_package_stays_in_memory_after_indexing(conn, edge_env):
+    """edgelib has a @dataclass: griffe's dataclasses extension memoised it
+    with functools.cache, keeping every indexed package alive (the 1.5 GB
+    after a 50-dependency job)."""
+    import gc
+
+    import griffe
+
+    gc.collect()
+    alive = [o for o in gc.get_objects() if isinstance(o, griffe.Module) and str(getattr(o, "path", "")).startswith("edgelib")]
+    assert alive == []
+
+
+# ------------------------------------------------ false-positive harness --
+def test_attributes_other_code_assigns_on_instances_are_not_errors(conn, builtin_env):
+    """Found by scripts/check_corpus.py over _pytest: logging.Formatter.format
+    does ``record.message = record.getMessage()``, so LogRecord.message
+    exists at runtime although no class body declares it."""
+    code = (
+        "import logging\n"
+        "def show(record: logging.LogRecord) -> str:\n"
+        "    record.getMessage()\n"
+        "    return record.message + record.asctime + record.levelnme\n"
+    )
+    result = checker.api_check_code(conn, code, env_row=builtin_env)
+    assert [(f["line"], f["symbol"]) for f in result["findings"]] == [(4, "logging.LogRecord.levelnme")]

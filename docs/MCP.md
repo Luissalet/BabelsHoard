@@ -17,14 +17,20 @@ Conventions:
   `env-<12 hex>`, job ids `job-<12 hex>`.
 - Lists are capped and say so (`truncated`, `has_more`, `next_offset`).
   Signatures and summaries in search results are cut at 200 characters.
-- `env` accepts an environment id, a registered project folder or
-  interpreter path, or nothing (the most recently registered project; before
-  any registration, Babel's own interpreter).
+- `env` accepts an environment id, a registered project folder,
+  interpreter or `node_modules` path, or nothing: then Python checks and
+  lookups use the most recently registered project **with a Python
+  interpreter**, TypeScript checks and npm lookups the most recent **with
+  `node_modules`** (before any registration, Babel's own interpreter).
+  `docs_libraries` marks them with `default_for`.
 - A package is indexed the first time a lookup or check needs it, and again
   when its installed version changes; the answer is always about the version
   installed right now.
 - Errors are tool errors whose text is `<code>: <message>`, e.g.
-  `bad_path: not a directory: C:\docs` or `unknown_environment: ...`.
+  `bad_path: not a directory: C:\docs`, `unknown_environment: ...` (the
+  message says to register the folder with `docs_add_environment` and lists
+  known ids) or `no_python: ...` (a Python check against a
+  `node_modules`-only environment; the message names the Python ones).
   Timeouts: `api_lookup`, `api_check_code`, `docs_add_environment`,
   `docs_index_folder` and `docs_catalog` wait up to 300 s (first-use
   indexing of a very large package), the others 30 s.
@@ -44,7 +50,8 @@ background jobs. Use it to find an env id or follow a job.
  "total": 6, "has_more": false, "next_offset": null,
  "note": "Packages installed but not listed here are indexed automatically on first api_lookup/api_check_code.",
  "environments": [{"id": "env-b50df97e0eff", "label": "Babel's own interpreter", "python": "3.11.15",
-   "python_path": ".../.venv/bin/python", "node_modules_path": null, "builtin": true, "default": true}],
+   "python_path": ".../.venv/bin/python", "node_modules_path": null, "builtin": true, "default": true,
+   "default_for": ["python"]}],
  "jobs": [{"id": "job-3f1c...", "kind": "install_docset", "status": "running", "progress": 0.45,
    "message": "converted 120/260 pages", "updated_at": "2026-09-22T21:10:04Z"}]}
 ```
@@ -55,8 +62,11 @@ background jobs. Use it to find an env id or follow a job.
 
 Ranked full-text search (SQLite FTS5, bm25) over indexed APIs, docsets and
 markdown sections. Identifiers are split on camelCase, snake_case and dots,
-so `"send a get request"` matches `httpx.Client.get`. Re-exports of the same
-definition count once. `limit` max 50. With no hits, `did_you_mean` offers
+so `"send a get request"` matches `httpx.Client.get`. Hits are re-ranked so
+functions, methods and classes whose own name matches the words come before
+attributes and constants (`"timeout"` → `httpx.Timeout`), and an exact
+identifier (`"Field"`) always finds the entries with that name. Re-exports
+of the same definition count once, under their shortest public path. `limit` max 50. With no hits, `did_you_mean` offers
 existing names close to the query.
 
 ```json
@@ -105,7 +115,9 @@ Not found:
 `certain: false` means the parent creates names dynamically or is only
 partly indexed, so the symbol may exist at runtime. A package that is not
 installed in the environment returns `certain: false` and a message saying
-so.
+so. A module or class the first (size-capped) pass recorded but did not
+expand (`sqlalchemy.ext.asyncio` in SQLAlchemy) is indexed on the spot, so
+its members are found on the first lookup.
 
 ## `api_check_code(code, env?, language="python")`
 
@@ -135,8 +147,13 @@ constructors of classes with `__new__` or custom metaclasses, and code under
 
 Values are followed through `import`/`from ... import`, simple assignments,
 annotated variables and parameters, function return annotations, methods
-returning `Self`, `with`/`async with` (via `__enter__`/`__aenter__`), and
-`await` (an un-awaited coroutine is not treated as its result).
+returning `Self`, `with`/`async with` (via `__enter__`/`__aenter__`, or the
+yielded type of an `@(async)contextmanager` such as
+`client.stream(...) as response`), classes defined in the snippet whose
+bases are indexed (`item.dict()` on `class Item(BaseModel)` is reported as
+deprecated), and `await` (an un-awaited coroutine is not treated as its
+result). A Python check with `env` set to a `node_modules`-only environment
+fails with `no_python` instead of returning an unverified "ok".
 
 ```json
 {"ok": false,
@@ -154,8 +171,11 @@ returning `Self`, `with`/`async with` (via `__enter__`/`__aenter__`), and
 At most 25 findings are returned (`truncated: true` beyond that).
 `language="typescript"` (v1) checks that names in `import { A, type B }
 from "pkg"` / `export { A } from "pkg"` are exported by the installed
-package (indexed on first use, needs Node.js); relative imports and packages
-that are not installed are `unchecked`.
+package (indexed on first use, needs Node.js; packages with more than 500
+exports list the rest by name only, which is enough for this check); a name
+that another installed package exports says which (`useFormStatus` is
+`react-dom`'s). Relative imports and packages that are not installed are
+`unchecked`.
 
 ## `docs_read(id, offset=0, max_chars=4000)`
 
@@ -172,17 +192,24 @@ returns in `doc`.
 ## `docs_add_environment(path, index_dependencies=true)`
 
 Registers a project folder (detects `.venv`, `venv`, `env`, `.env` and
-`node_modules`), an interpreter named like `python`/`python3.x`/`python.exe`,
-or a `node_modules` folder. Registering again is harmless. With
-`index_dependencies`, the direct dependencies from `pyproject.toml`
+`node_modules`, also one level down in `frontend/`, `web/`, `client/`, `ui/`,
+`webapp/` or `app/`), an interpreter named like
+`python`/`python3.x`/`python.exe`, or a `node_modules` folder. Registering
+again is harmless, keeps the id and makes it the default again. With
+`index_dependencies`, the direct runtime dependencies from `pyproject.toml`
 (`[project]`, optional dependencies, `[dependency-groups]`, Poetry) and
 `requirements*.txt` are indexed in a background job, mapped to their import
-names (`PyYAML` → `yaml`).
+names (`PyYAML` → `yaml`; every import name of a distribution that ships
+several, like pytest's `py` and `pytest`). Development-only groups and files
+(`dev`, `test`, `lint`, `requirements-dev.txt`, ...) and tools (pytest,
+mypy, ruff, black, ...) are skipped and listed in `skipped_dev_tools`; they
+are still indexed on first use when code imports them.
 
 ```json
 {"environment": {"id": "env-9f32f7702138", "label": "C:\\code\\shop", "python": "3.13.1",
    "python_path": "C:\\code\\shop\\.venv\\Scripts\\python.exe", "node_modules_path": null, "builtin": false},
  "dependency_job_id": "job-5d0c1f2a9b7e", "dependencies": ["fastapi", "pandas", "pyyaml"],
+ "skipped_dev_tools": ["mypy", "pytest", "ruff"],
  "message": "Registered. Indexing 3 direct dependencies in the background; api_lookup/api_check_code also index packages on first use."}
 ```
 

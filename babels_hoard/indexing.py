@@ -37,7 +37,8 @@ when it cannot be sure:
 ``sig0``   the signature is not reliable for argument checks (a decorator
            that may change it).
 ``ovn``/``ovk``  overloaded function: union of parameter names / whether any
-           overload takes ``**kwargs``.
+           overload takes ``**kwargs``; ``ovp`` each overload's parameters
+           as ``[name, p|k|o|v|w, required]``.
 ``ret``    canonical path of the returned class (for instance inference);
 ``rself``  returns ``Self`` (or ``self``).
 ``ctor``   calling the class runs the indexed ``__init__`` (no ``__new__``,
@@ -466,6 +467,20 @@ def _function_meta(func: Any, parent_kind: str | None) -> dict[str, Any]:
         meta["ovn"] = sorted(names)
         if takes_kwargs:
             meta["ovk"] = 1
+        # Each overload's shape, so a call can be matched to the overloads it
+        # fits: pytest.raises(E, match=...) is not the legacy
+        # raises(E, func, *args, **kwargs) form, whose **kwargs would
+        # otherwise hide every misspelled keyword.
+        shapes = []
+        for ov in overloads[:12]:
+            shape = []
+            for p in getattr(ov, "parameters", None) or []:
+                kind_raw = p.kind.value if hasattr(p.kind, "value") else str(p.kind)
+                code = _SHAPE_KIND.get(kind_raw, "k")
+                required = code in ("p", "k", "o") and p.default is None
+                shape.append([p.name, code, int(required)])
+            shapes.append(shape)
+        meta["ovp"] = shapes
     ret = getattr(func, "returns", None)
     cm = _context_manager_yield(func, decorators, ret)
     if cm:
@@ -483,6 +498,11 @@ def _function_meta(func: Any, parent_kind: str | None) -> dict[str, Any]:
         meta["rself"] = 1
     return meta
 
+
+_SHAPE_KIND = {
+    "positional-only": "p", "positional or keyword": "k", "keyword-only": "o",
+    "variadic positional": "v", "variadic keyword": "w",
+}
 
 _ITERATOR_TYPES = {
     "Iterator", "AsyncIterator", "Generator", "AsyncGenerator", "Iterable", "AsyncIterable",
@@ -628,6 +648,35 @@ def _module_class_patches(src: str) -> tuple[dict[str, set[str]], set[str]]:
     return attrs, dynamic
 
 
+def _outside_attribute_stores(src: str) -> set[str]:
+    """Public attribute names a module assigns on objects other than
+    ``self``/``cls``: ``record.message = record.getMessage()`` in
+    ``logging.Formatter.format`` gives every ``LogRecord`` a ``message``
+    that no class body declares. Such names are recorded on the module's
+    classes, so using them is never reported as missing."""
+    tree = _parse(src)
+    if tree is None:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        for t in targets:
+            for sub in ast.walk(t):
+                if (
+                    isinstance(sub, ast.Attribute)
+                    and isinstance(sub.ctx, ast.Store)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id not in ("self", "cls")
+                    and not sub.attr.startswith("_")
+                ):
+                    names.add(sub.attr)
+    return names
+
+
 _BENIGN_NAME_CALLS = {"getLogger", "get_logger", "getChild", "Logger", "LoggerAdapter", "filterwarnings", "simplefilter", "warn"}
 
 
@@ -761,12 +810,19 @@ class _Analyzer:
         # `from _accelerated import *`, as datetime does)
         self.shadowing: set[str] = set()
         self._patches: dict[str, tuple[dict[str, set[str]], set[str]]] = {}
+        self._outside: dict[str, set[str]] = {}
 
     def patches(self, mod: Any) -> tuple[dict[str, set[str]], set[str]]:
         key = getattr(mod, "path", "")
         if key not in self._patches:
             self._patches[key] = _module_class_patches(_source_of(mod))
         return self._patches[key]
+
+    def outside_stores(self, mod: Any) -> set[str]:
+        key = getattr(mod, "path", "")
+        if key not in self._outside:
+            self._outside[key] = _outside_attribute_stores(_source_of(mod))
+        return self._outside[key]
 
     # modules --------------------------------------------------------
     def module_dyn(self, mod: Any, _stack: tuple = ()) -> Any:
@@ -1322,6 +1378,16 @@ class _Walker:
                         signature=attr, summary="Class attribute assigned after the class body.",
                         target=f"{obj.path}.{attr}",
                     )
+                for attr in sorted(self.analyzer.outside_stores(owner)):
+                    if attr in seen_names or f"{qual}.{attr}" in self.rows:
+                        continue
+                    seen_names.add(attr)
+                    self._add(
+                        f"{qual}.{attr}", attr, "attribute", None, qual, {"nx": 1},
+                        signature=attr,
+                        summary="May be assigned on instances by other code in this module (e.g. record.message = ...); not declared by the class.",
+                        target=f"{obj.path}.{attr}",
+                    )
             for attr in _extra_instance_attributes(obj):
                 if attr in seen_names or f"{qual}.{attr}" in self.rows:
                     continue
@@ -1421,7 +1487,35 @@ def _load_root(paths: list[str], import_name: str, focus: str | None = None) -> 
             preload.append(needed)
 
 
-def index_python_library(
+def index_python_library(conn, **kwargs: Any) -> dict[str, Any]:
+    """Index one import name of an installed distribution (or a stdlib
+    module) for an environment; returns the library row. See
+    ``_index_python_library`` for the arguments."""
+    try:
+        return _index_python_library(conn, **kwargs)
+    finally:
+        _clear_run_caches()
+
+
+def _clear_run_caches() -> None:
+    """The memo caches hold griffe objects (a docstring keeps its whole
+    package alive): drop them once a library is written, or every package
+    indexed by the process stays in memory (1.5 GB after a 50-dependency
+    job)."""
+    _DOC_CACHE.clear()
+    _CLASS_SRC_CACHE.clear()
+    # griffe's built-in dataclasses extension memoises per Class object with
+    # functools.cache, which keeps every indexed package reachable (pinned
+    # griffe version; absent in others, hence the guard).
+    try:
+        from griffe._internal.extensions import dataclasses as _griffe_dataclasses
+
+        _griffe_dataclasses._dataclass_parameters.cache_clear()
+    except (ImportError, AttributeError):
+        pass
+
+
+def _index_python_library(
     conn,
     *,
     env: dict[str, Any],
@@ -1720,4 +1814,5 @@ def expand_on_demand(conn, env_row: dict[str, Any], lib: dict[str, Any], entry: 
         )
         conn.commit()
     logger.info("expanded %s on demand: %d entries", qualname, len(rows))
+    _clear_run_caches()
     return True

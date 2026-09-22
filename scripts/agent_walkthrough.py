@@ -81,6 +81,33 @@ def top_k(query: str, docs: list[str], k: int = 5) -> list[tuple[str, float]]:
     return [(docs[i], float(scores[i])) for i in order]
 '''
 
+# Correct code that used to produce false errors (compiled submodule, stub
+# methods declared only with @overload, a namespace sub-package).
+UC5_STACK_PROBES = """from lxml import etree
+import numpy as np
+from chromadb.api.models.Collection import Collection
+
+root = etree.fromstring("<a/>")
+rng = np.random.default_rng(0)
+sample = rng.normal(size=3)
+picks = rng.integers(0, 10, size=4)
+"""
+
+# Two mistakes in a pytest file (the pytest distribution ships two import
+# names, py and pytest; only one used to be indexed).
+UC5_PYTEST = """import pytest
+
+
+@pytest.fixtur
+def client():
+    return 1
+
+
+def test_rejects_bad_input():
+    with pytest.raises(ValueError, matchh="bad"):
+        raise ValueError("bad input")
+"""
+
 # Three realistic mistakes introduced into the (correct) UC5 module.
 UC5_MUTATIONS = [
     ('router = APIRouter(prefix="/api", tags=["chat"])', 'router = APIRouter(prefix="/api", tag=["chat"])'),
@@ -149,7 +176,7 @@ async def run(url: str, project: Path, transcript_path: Path | None) -> int:
             for tool in tools:
                 first = (tool.description or "").strip().splitlines()[0]
                 seen = first[:LISTING_CHARS]
-                spanish = any(w in seen.lower() for w in ("buscar", "firma", "comprobar", "registrar", "leer", "listar", "indexar", "instalar", "catalogo", "catálogo", "documentación", "documentacion"))
+                spanish = any(w in seen.lower() for w in ("buscar", "firma", "comprobar", "registrar", "leer", "listar", "indexar", "instalar", "catalogo", "catálogo", "documentación", "documentacion", "librerías", "librerias"))
                 print(f"  {tool.name:22s} [{len(first):3d} chars{', ES' if spanish else ', no ES'}] {seen}")
                 if len(first) > 110 or not spanish:
                     problems.append(f"{tool.name}: first description line is {len(first)} chars, Spanish trigger words: {spanish}")
@@ -209,6 +236,22 @@ async def run(url: str, project: Path, transcript_path: Path | None) -> int:
             if caught != len(UC5_MUTATIONS):
                 problems.append(f"UC5: {caught} of {len(UC5_MUTATIONS)} introduced mistakes reported as errors")
 
+            print("     correct code across the stack (lxml, numpy stubs, chromadb):")
+            ok, probe_res = await agent.call("api_check_code", code=UC5_STACK_PROBES, env=env_id)
+            print("     " + summarize_findings(probe_res))
+            if not ok or probe_res.get("findings"):
+                problems.append(f"UC5: false findings on correct stack code: {summarize_findings(probe_res)}")
+            test_file = project / "backend" / "tests" / "test_chat_service.py"
+            if test_file.is_file():
+                ok, tclean = await agent.call("api_check_code", code=test_file.read_text(encoding="utf-8"), env=env_id)
+                print("     project test file: " + summarize_findings(tclean))
+                if not ok or tclean.get("findings"):
+                    problems.append("UC5: the project's correct test file produced findings")
+            ok, tbad = await agent.call("api_check_code", code=UC5_PYTEST, env=env_id)
+            print("     pytest snippet with two mistakes: " + summarize_findings(tbad))
+            if not ok or len(tbad.get("findings", [])) != 2:
+                problems.append("UC5: the two pytest mistakes were not both reported")
+
             # ---------------------------------------------------------- UC6
             print("\n== UC6: learn fastembed, write memory.py (Faustus file tool), check it")
             ok, hits = await agent.call("docs_search", query="query embedding", library="fastembed", env=env_id)
@@ -253,6 +296,24 @@ async def run(url: str, project: Path, transcript_path: Path | None) -> int:
             await agent.call("api_check_code", code="def broken(:\n    pass\n", env=env_id)
             await agent.call("docs_add_environment", path=str(project / "README-does-not-exist.txt"))
             await agent.call("docs_install_docset", slug="not a slug")
+            frontend = project / "frontend"
+            if (frontend / "node_modules").is_dir():
+                ok, reg = await agent.call("docs_add_environment", path=str(frontend), index_dependencies=False)
+                if ok:
+                    front_id = reg["environment"]["id"]
+                    ok, res = await agent.call("api_check_code", code="import httpx\nhttpx.Client(retries=3)\n", env=front_id)
+                    if ok:
+                        problems.append("a Python check against the node_modules-only environment did not fail")
+                    ok, res = await agent.call("api_check_code", code="import httpx\nhttpx.Client(retries=3)\n")
+                    if ok:
+                        print(f"     without env after registering the frontend: env={res.get('env')} " + summarize_findings(res))
+                        if res.get("env") != env_id:
+                            problems.append("the default Python environment moved to the frontend-only one")
+                    ok, res = await agent.call(
+                        "api_check_code", code='import { useState, useFormStatus } from "react";\n', language="typescript"
+                    )
+                    if ok:
+                        print("     typescript without env: " + summarize_findings(res))
 
             total = sum(c["chars"] for c in agent.transcript)
             biggest = max(agent.transcript, key=lambda c: c["chars"])

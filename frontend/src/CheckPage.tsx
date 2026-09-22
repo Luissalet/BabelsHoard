@@ -62,6 +62,7 @@ export function CheckPage({ lang }: { lang: Lang }) {
       setResult(r);
       setCheckedCode(code);
     } catch (e) {
+      setResult(null); // never show the previous result next to an error
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -123,7 +124,7 @@ export function CheckPage({ lang }: { lang: Lang }) {
           </label>
           <div className="toolbar-spacer" />
           <span className="text-dim small">{t(lang, "check_shortcut")}</span>
-          <button className="btn btn-primary" onClick={run} disabled={busy || !code.trim()}>
+          <button className="btn btn-primary" onClick={run} disabled={busy || !code.trim() || envMismatch}>
             {busy ? <Loader2 size={14} className="spin" /> : <ShieldCheck size={14} />} {t(lang, "check_button")}
           </button>
         </div>
@@ -137,7 +138,7 @@ export function CheckPage({ lang }: { lang: Lang }) {
           onChange={setCode}
           findings={stale ? [] : result?.findings ?? []}
           placeholder={t(lang, "check_placeholder")}
-          onSubmit={run}
+          onSubmit={() => !envMismatch && run()}
         />
         {busy && <div className="text-dim small" style={{ marginTop: 8 }}>{t(lang, "check_checking")}</div>}
         {error && <div className="finding" style={{ marginTop: 10 }}>{error}</div>}

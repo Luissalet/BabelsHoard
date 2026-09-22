@@ -108,6 +108,9 @@ export function SearchPage({ lang }: { lang: Lang }) {
   }, [query, ecosystem, kind, libraryFilter, envFilter]);
 
   useEffect(() => {
+    // A slow answer to an older query (the machine is busy indexing) must
+    // never replace the answer to the current one.
+    let stale = false;
     const handle = setTimeout(() => {
       if (!query.trim()) {
         setResults([]);
@@ -123,13 +126,17 @@ export function SearchPage({ lang }: { lang: Lang }) {
           limit: 20,
         })
         .then((r) => {
+          if (stale) return;
           setResults(r.results);
           setDidYouMean(r.did_you_mean ?? []);
           setSearched(true);
         })
-        .catch(() => setResults([]));
+        .catch(() => !stale && setResults([]));
     }, 180);
-    return () => clearTimeout(handle);
+    return () => {
+      stale = true;
+      clearTimeout(handle);
+    };
   }, [query, ecosystem, kind, libraryFilter, envFilter]);
 
   const libraryNames = [...new Set(libraries.map((l) => l.name))].sort();

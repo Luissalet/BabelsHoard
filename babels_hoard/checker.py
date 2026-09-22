@@ -754,10 +754,18 @@ class _Checker(ast.NodeVisitor):
         call_kwstar = any(k.arg is None for k in node.keywords)
         overload_names = meta.get("ovn")
         if overload_names is not None:
-            # Overloaded: only the keyword check is safe (a keyword no overload accepts).
-            if meta.get("ovk"):
-                return
-            accepted = set(overload_names) - {"self", "cls"}
+            # Overloaded: only the keyword check is safe (a keyword no overload
+            # that fits this call accepts).
+            shapes = meta.get("ovp")
+            if shapes and not call_star and not call_kwstar:
+                fitting = [sh for sh in shapes if _overload_fits(sh, node, drop_first)]
+                if not fitting or any(k == "w" for sh in fitting for _n, k, _r in sh):
+                    return
+                accepted = {n for sh in fitting for n, k, _r in sh if k in ("k", "o")} - {"self", "cls"}
+            else:
+                if meta.get("ovk"):
+                    return
+                accepted = set(overload_names) - {"self", "cls"}
             for kw in node.keywords:
                 if kw.arg and kw.arg not in accepted:
                     self._unexpected_kw(node, kw.arg, label, where, sorted(accepted))
@@ -803,6 +811,25 @@ class _Checker(ast.NodeVisitor):
             f"'{kw}' is not a parameter of {where}.",
             _suggest_keyword(kw, accepted, label),
         )
+
+
+def _overload_fits(shape: list[list[Any]], node: ast.Call, drop_first: bool) -> bool:
+    """Could this overload (``[name, kind, required]`` per parameter) accept
+    the call's positional arguments and required parameters? Keywords are
+    not considered here: they are what gets checked against the fitting
+    overloads."""
+    params = list(shape)
+    if drop_first and params and params[0][1] in ("p", "k"):
+        params = params[1:]
+    positional = [p for p in params if p[1] in ("p", "k")]
+    n_args = len(node.args)
+    if n_args > len(positional) and not any(p[1] == "v" for p in params):
+        return False
+    supplied = {k.arg for k in node.keywords if k.arg}
+    for i, (name, kind, required) in enumerate(positional):
+        if required and i >= n_args and (kind == "p" or name not in supplied):
+            return False
+    return all(name in supplied for name, kind, required in params if kind == "o" and required)
 
 
 def _suggest_keyword(kw: str, accepted: list[str], label: str) -> str | None:
