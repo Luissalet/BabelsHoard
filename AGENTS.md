@@ -4,42 +4,40 @@ Reglas para agentes de código que trabajen en este repositorio.
 
 ## Antes de tocar nada
 
-- Lee `docs/ARCHITECTURE.md` y `docs/MCP.md` antes de cambiar `indexing.py`,
-  `checker.py` o `mcp_server.py` - explican decisiones no obvias (por qué
-  los alias no resueltos se registran igualmente, por qué el checker usa
-  `unchecked` en vez de adivinar, por qué `find_distribution` hace dos
-  pasadas).
-- El núcleo (`indexing.py`, `checker.py`, `search.py`, `docsets.py`,
-  `markdown_index.py`, `deps.py`, `node_indexing.py`) no debe importar
-  `fastapi` ni nada de `api.py`. Solo toma una conexión sqlite y diccionarios
-  planos. Esto es lo que permite testear sin arrancar un servidor.
+- Lee `docs/ARCHITECTURE.md` (sobre todo «Python indexing», «Symbol
+  resolution» y «Checker») antes de cambiar `indexing.py`, `symbols.py`,
+  `checker.py` o `mcp_server.py`.
+- El núcleo (`indexing.py`, `symbols.py`, `checker.py`, `search.py`,
+  `docsets.py`, `markdown_index.py`, `deps.py`, `node_indexing.py`) no
+  importa `fastapi` ni `api.py`: recibe una conexión sqlite y diccionarios.
+- Cada hilo usa su propia conexión (`db.Database.conn()`); nunca compartas
+  una conexión entre hilos ni la pases a una tarea en segundo plano (las
+  tareas reciben la suya).
 
 ## Reglas duras
 
-- **Nunca** inventes un resultado. Si algo no se puede resolver con
-  confianza (alias dinámico, tipo no resuelto), cuenta en `unchecked` y
-  no reportes nada. Cero falsos positivos vale más que cobertura.
-- `mcp_server.py` es un script standalone: solo puede importar stdlib,
-  `httpx` y `mcp`. Nunca importes desde el paquete `babels_hoard`.
-- Cualquier tool nuevo bajo `/api/agent/<tool>` debe:
-  1. devolver JSON compacto (resultados por defecto de 5-10 items, con
-     `truncated`/`has_more` cuando se corte),
-  2. quedar registrado en `agent_calls` (usa `call_tool(...)` en `api.py`),
-  3. tener su propio tool MCP en `mcp_server.py` con docstring + línea
-     `Keywords: ... (inglés y español)`,
-  4. añadirse a `faustus-plugin.json` si cambia el contrato del plugin.
-- No uses `window.confirm`/`alert` en el frontend - usa confirmación en
-  dos pasos inline.
-- Todo texto de commit en inglés, sin nombrar otras apps ni datos
-  personales, con los trailers exactos que pide el contrato.
+- **Cero falsos positivos.** El comprobador solo da `error` si el espacio de
+  nombres es estáticamente completo (`symbols.SymbolIndex.certainty_of_absence`).
+  Si añades un caso dinámico nuevo, márcalo en los metadatos de
+  `indexing.py` y añade el caso a `tests/fixtures/edgelib` y a
+  `tests/test_checker_edges.py`.
+- Escribe primero el test que falla y después el arreglo.
+- `mcp_server.py` es un script independiente: solo stdlib, `httpx` y `mcp`.
+- Una herramienta nueva en `/api/agent/<tool>`: salida compacta con ids y
+  `truncated`/`has_more`, registrada con `call_tool(...)`, con su tool MCP
+  (docstring + línea `Keywords:` en inglés y español, anotaciones honestas)
+  y documentada en `docs/MCP.md`. La interfaz web usa sus propios endpoints,
+  nunca `/api/agent/*`.
+- Nada de `window.confirm`/`alert` en el frontend; textos en `i18n.ts`
+  (inglés y español de España).
+- Commits en inglés, sin nombres de otros productos ni datos personales, con
+  la identidad y los trailers del contrato.
 
 ## Antes de dar algo por terminado
 
-- `pytest -q` en el `.venv` del repo (offline, <90s).
-- `npm run build` en `frontend/` con cero errores de TypeScript.
-- Si tocaste `indexing.py`/`checker.py`, corre también
-  `pytest tests/test_indexing.py tests/test_checker.py -q` y revisa que el
-  caso `fakelib_v1`/`fakelib_v2` siga demostrando la migración de API.
-- Si tocaste `mcp_server.py` o `api.py`, corre
-  `pytest tests/test_mcp_protocol.py -q` (arranca la app real y habla el
-  protocolo MCP de verdad).
+- `pytest -q` en el `.venv` del repo (sin red, menos de 90 s).
+- `npm run build` en `frontend/` sin errores de TypeScript.
+- Si cambias la interfaz: `python -m babels_hoard --demo --no-browser
+  --port 18811` y `python scripts/screenshots.py http://127.0.0.1:18811`,
+  y mira las capturas.
+- README.md y README.es.md solo pueden afirmar lo que has ejecutado.

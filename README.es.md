@@ -1,68 +1,80 @@
 # Babel's Hoard
-### ¿Qué dice de verdad la versión que hay instalada?
-**Un índice local y exacto por versión de las APIs de tus proyectos Python y JS/TS, y un comprobador de APIs alucinadas construido encima - para que un modelo de código deje de adivinar firmas a partir de datos de entrenamiento desactualizados.**
+### ¿Qué dice de verdad la versión que tienes instalada?
+**Un índice local y exacto de las API de los paquetes instalados en tus proyectos, y un comprobador que detecta API inventadas o mal usadas en el código que acaba de escribir un modelo, sin ejecutar nunca ese código.**
 
 [English](README.md) · [Ejecutar en local](#ejecutar-en-local-en-windows) · [Conectar una IA](docs/MCP.md) · [Portfolio](https://luissalet.github.io/Portfolio/#projects)
 
-![Vista de búsqueda: la consulta "send a get request" muestra httpx.Client.get con su firma real instalada](docs/media/search.png)
-*Aplicación real, datos de demostración (el propio intérprete de Babel, indexado en el momento de construir la app).*
+![Búsqueda: «send a get request» devuelve httpx.Client.get con la firma de httpx 0.28.1 instalado](docs/media/search.png)
+*Aplicación real, datos de demostración: el intérprete del propio Babel con httpx, pydantic, fastapi, griffe y el módulo json de la biblioteca estándar indexados.*
 
 ## Por qué
 
-Los datos de entrenamiento de un modelo de código local son una mezcla de
-versiones de librerías: escribe `df.append(...)` para pandas 2.x, pasa un
-argumento con nombre que ya se renombró, importa un símbolo que cambió de
-módulo, o inventa un parámetro que nunca existió. Buscar en la web es
-lento, ruidoso y no específico de la versión que tienes instalada de
-verdad. La fuente de la verdad ya está en el disco - el propio `.venv` y
-`node_modules` del proyecto - Babel lo lee, lo indexa de forma estática, y
-responde con la firma real, o te dice claramente que lo que pides no existe
-y cuál es el nombre real más parecido.
+Los datos de entrenamiento de un modelo de código mezclan versiones de las
+librerías. Escribe `df.append(...)` para pandas 2.x, pasa un argumento que
+cambió de nombre, importa algo que se movió de módulo o llama a
+`response.jsonify()` porque suena bien. Buscar en la web es lento y no
+distingue versiones. La verdad ya está en el disco: el `.venv` y el
+`node_modules` del propio proyecto. Babel los lee de forma estática,
+responde con la firma real y comprueba fragmentos de código contra ellos.
 
-![Vista de comprobar código: una llamada client.get(..., bogus_kw=1) se marca como argumento con nombre inesperado](docs/media/check-code.png)
-*Aplicación real, datos de demostración. El comprobador nunca ejecuta el fragmento - lo analiza y resuelve los nombres contra el entorno indexado.*
+El comprobador está pensado para que un modelo que no puede verificarlo se
+fíe de él: **solo informa de un error cuando puede demostrarlo.** Un nombre
+que falta en un módulo que hace `import *` de una extensión compilada (`os`,
+`socket`), que rellena su espacio de nombres con `globals()` (`re`,
+`hashlib`) o que resuelve nombres en `__getattr__` nunca se da como error; el
+código protegido con `try/except ImportError` o `hasattr` no se toca. Lo que
+no puede demostrar se cuenta como `unchecked` (sin verificar).
+
+![Comprobar código: response.jsonify() y client.post(..., retry=3) marcados contra httpx 0.28.1, con las líneas afectadas](docs/media/check-code.png)
+*Aplicación real, datos de demostración. El fragmento se analiza, nunca se ejecuta; `jsonify` se detecta gracias al tipo que devuelve `client.get` y a la variable de `with ... as client`.*
 
 ## Qué está implementado
 
 | Área | Disponible ahora | Límite |
 | --- | --- | --- |
-| Indexado de Python | Estático (griffe/AST, nunca ejecuta código del proyecto) de cualquier intérprete registrado, sus distribuciones instaladas y la stdlib, de forma perezosa y cacheada por (entorno, paquete, versión) | Tope de 1500 entradas y profundidad 8 por paquete (se marca `partial`, no se trunca en silencio); las extensiones compiladas sin stubs `.pyi` se registran como `note: "compiled, no stubs"` en vez de inventarse; un alias condicional entre módulos que griffe no puede resolver estáticamente (`os.path` es el ejemplo canónico) se registra como marcador sin resolver, no se describe por completo |
-| Indexado JS/TS | API del compilador de TypeScript sobre los `.d.ts` de un paquete (campo types/typings, `exports[...].types`, `index.d.ts`, o un paquete `@types/<nombre>`); funciones, clases, interfaces, un nivel de miembros, JSDoc, `@deprecated` | Sin Node.js en el PATH degrada con un error claro, el resto de la app sigue funcionando; solo se indexan los miembros exportados de primer nivel más un nivel de miembros |
-| Comprobación de alucinaciones/mal uso (`api_check_code`) | Imports/atributos inexistentes, argumentos con nombre inesperados, demasiados posicionales, argumento requerido ausente, uso de APIs obsoletas - todo con sugerencias "¿quisiste decir"; diseño de cero falsos positivos, demostrado contra un paquete de prueba con dos versiones (una API eliminada entre versiones) y contra fragmentos reales buenos/malos de httpx | Comprobación completa solo en Python; TypeScript es v1 (solo existencia de imports con nombre); el código dinámico, las clases base no resueltas y los valores sin tipo se reportan como `unchecked`, nunca se asumen correctos en silencio |
-| Búsqueda de texto completo | SQLite FTS5, ponderado bm25 (nombre/qualname/firma/resumen/doc), tokenización consciente de camelCase/snake_case/puntos, filtros por librería/ecosistema/tipo/entorno | Sin búsqueda semántica/por embeddings - solo léxica |
-| Docsets sin conexión | Catálogo e instalación del espejo de DevDocs (HTML convertido a Markdown, dividido por ancla de sección, indexado) | Solo el catálogo/instalación tocan la red, nada más; la conversión es un paso propio basado solo en la stdlib, no es pixel-perfect |
-| Carpetas markdown | Indexa cualquier carpeta de `.md`/`.mdx`/`.rst`/`.txt` dividida por encabezado | Sin resolución de enlaces entre archivos |
-| Auditoría del asistente | Cada llamada a `/api/agent/*` queda registrada (herramienta, resumen de argumentos, duración, ok/error) y se ve en "Actividad del asistente" | Solo local, no se exporta |
-| Interfaz | App de escritorio en React 19: Buscar, Librerías (registrar entornos, indexar bajo demanda, indexar dependencias del proyecto en segundo plano), Comprobar código, Docsets, Actividad del asistente, Ajustes; claro/oscuro, inglés/español | - |
+| Indexado de Python | Indexado estático (griffe sobre el código fuente y los stubs `.pyi`; el código del proyecto nunca se ejecuta) de las distribuciones y los módulos de la biblioteca estándar de cualquier intérprete registrado, cuando hace falta por primera vez y en caché por entorno + paquete + versión. En anchura, para que la API pública se indexe primero; cada objeto se expande una sola vez y sus otras rutas públicas apuntan a él; se resuelven clases base y reexportaciones de otros paquetes; se registra qué módulos y clases se conocen por completo (espacios de nombres dinámicos, límites, módulos compilados) | Límites por paquete: 15.000 entradas, 1.500 módulos analizados (sin las baterías de tests), 600 módulos de otros paquetes; una librería que los supera queda como `partial` y sus espacios de nombres incompletos nunca generan errores. Las extensiones compiladas sin stubs se registran como tales, sin miembros. No se indexan los módulos propios del proyecto que no estén instalados |
+| Seguimiento de versiones | El sondeo del intérprete se reutiliza hasta que cambia su site-packages; tras una actualización, la siguiente consulta indexa la versión nueva y marca la anterior como `superseded` (solo se muestra como «otras versiones») | La detección se basa en la fecha de modificación de las carpetas de site-packages; las instalaciones editables que cambian el código sin reinstalar conservan lo indexado hasta reindexar |
+| Comprobación de código (`api_check_code`) | Módulos y atributos inexistentes, argumentos por nombre inesperados, parámetros solo posicionales pasados por nombre, demasiados posicionales, obligatorios que faltan y API obsoletas, con sugerencias. Sigue los valores a través de importaciones, asignaciones, anotaciones, tipos de retorno, métodos que devuelven `Self`, `with`/`async with` y `await`; distingue receptores (instancia, clase, estático, sin enlazar) y constructores; las sobrecargas se comprueban contra su contrato | Errores solo en espacios de nombres completos; las clases con `__getattr__` o `setattr(self, nombre)` y los módulos perezosos dan avisos; los tipos desconocidos, metaclases propias, `__new__`, decoradores desconocidos y el código protegido quedan sin verificar. TypeScript: solo importaciones y reexportaciones con nombre (v1) |
+| Consulta (`api_lookup`) | Firma, parámetros (tipo, valor por defecto, obligatorio, tipo de paso, descripción), tipo de retorno, resumen, los primeros 1.500 caracteres del docstring, miembros, archivo:línea y versión de la librería; `found: false` con los nombres reales más parecidos y si la ausencia es segura | Paquetes de Python y paquetes npm con declaraciones de tipos |
+| Indexado de JS/TS | API del compilador de TypeScript sobre las declaraciones del paquete (`types`/`typings`, `exports[...].types`, `index.d.ts`, `@types/<nombre>`): exportaciones, un nivel de miembros, JSDoc y `@deprecated`; se indexa al primer uso | Requiere Node.js; como máximo 500 exportaciones por paquete (después, `partial`) |
+| Búsqueda | FTS5 de SQLite con pesos bm25 (nombre, ruta, firma, resumen, documentación), tokens que entienden identificadores, filtros, un resultado por definición y sugerencias por trigramas | Léxica, sin embeddings |
+| Documentación sin conexión | Catálogo e instalación de DevDocs (HTML convertido a Markdown y dividido por anclas) como tarea en segundo plano | Necesita red, solo cuando lo pide el usuario o el modelo; el conversor es pequeño, no un renderizador HTML completo |
+| Carpetas de Markdown | `.md`/`.mdx`/`.rst`/`.txt` divididos por encabezado (respetando bloques de código y subrayados de rst) | Se omiten carpetas de dependencias, control de versiones y compilación; 2.000 archivos y 2 MB por archivo |
+| Auditoría del asistente | Cada llamada a `/api/agent/*` (herramienta, resumen de argumentos, duración, resultado) en «Actividad del asistente»; la interfaz usa sus propios endpoints, así que solo aparecen las llamadas del modelo | Solo local |
+| Interfaz | Búsqueda, panel de símbolo, Librerías (paquetes instalados con su estado de indexado), Comprobar código (números de línea, avisos bajo cada línea), Docsets, Actividad del asistente y Ajustes; tema claro/oscuro, inglés/español | Un solo usuario, navegador local |
 
-## Conectar con Faustus
+## Conectarlo a Faustus
 
-La app se declara mediante `faustus-plugin.json`. Arranca Babel's Hoard y
-luego, en Faustus: **Conectores → Apps cercanas → Añadir**.
+La aplicación se declara con [`faustus-plugin.json`](faustus-plugin.json).
+Arranca Babel's Hoard y en Faustus ve a **Conectores → Apps cercanas →
+Añadir**. Faustus lanza el adaptador stdio `babels_hoard/mcp_server.py`, que
+habla con la aplicación por la interfaz local.
 
-| Herramienta MCP | Solo lectura | Qué hace |
+| Herramienta MCP | Qué hace | Solo lectura |
 | --- | --- | --- |
-| `docs_libraries` | sí | Qué hay indexado, con versiones, y los entornos registrados |
-| `docs_search` | sí | Búsqueda ordenada por relevancia entre APIs, docsets y markdown |
-| `api_lookup` | sí* | Firma/parámetros/doc exactos de un símbolo (indexa bajo demanda la primera vez) |
-| `api_check_code` | sí* | Encuentra APIs alucinadas/eliminadas/mal usadas en un fragmento |
-| `docs_read` | sí | Lee una sección de docset o un docstring completo, por partes |
-| `docs_add_environment` | no | Registra un proyecto/intérprete/node_modules |
-| `docs_catalog` | sí | Lista docsets instalables sin conexión (red) |
-| `docs_install_docset` | no | Descarga e indexa un docset (red) |
-| `docs_index_folder` | no | Indexa una carpeta de documentación markdown |
+| `docs_libraries` | Librerías indexadas con versiones, entornos (y cuál es el predeterminado) y tareas recientes | sí |
+| `docs_search` | Búsqueda ordenada en API, docsets y markdown | sí |
+| `api_lookup` | Firma, parámetros y documentación exactos de un símbolo instalado | sí (solo escribe la caché local del índice) |
+| `api_check_code` | API inventadas, eliminadas o mal usadas en un fragmento | sí (solo escribe la caché local del índice) |
+| `docs_read` | Leer por partes un docstring o una sección por su id | sí |
+| `docs_add_environment` | Registrar una carpeta de proyecto, un intérprete o un node_modules | no |
+| `docs_catalog` | Docsets descargables (red) | sí |
+| `docs_install_docset` | Descargar e indexar un docset en segundo plano (red) | no |
+| `docs_index_folder` | Indexar una carpeta de documentación markdown | no |
 
-Formas exactas de argumentos/respuesta, límites y ejemplos:
-[docs/MCP.md](docs/MCP.md).
+Cada descripción termina con palabras clave en inglés y en español para que
+Faustus encuentre la herramienta. Formas de argumentos y resultados, límites
+y ejemplos: [docs/MCP.md](docs/MCP.md). La skill para el agente está en
+[skills/version-exact-apis/SKILL.md](skills/version-exact-apis/SKILL.md).
 
-También funciona con cualquier cliente MCP por stdio, no solo con Faustus:
+Funciona con cualquier cliente MCP por stdio:
 
 ```json
 {
   "mcpServers": {
     "babels-hoard": {
-      "command": "/ruta/absoluta/a/babels-hoard/.venv/bin/python",
-      "args": ["/ruta/absoluta/a/babels-hoard/babels_hoard/mcp_server.py"],
+      "command": "C:\\ruta\\a\\Babel's Hoard\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\ruta\\a\\Babel's Hoard\\babels_hoard\\mcp_server.py"],
       "env": { "BABEL_URL": "http://127.0.0.1:8811" }
     }
   }
@@ -71,57 +83,76 @@ También funciona con cualquier cliente MCP por stdio, no solo con Faustus:
 
 ## Ejecutar en local en Windows
 
-Haz doble clic en **`Iniciar Babel's Hoard.cmd`** (crea el entorno virtual,
-instala dependencias, compila el frontend la primera vez, y arranca el
-servidor), o manualmente:
+Haz doble clic en **`Iniciar Babel's Hoard.cmd`**. La primera vez,
+`scripts/start.ps1` busca Python 3.13 (lanzador `py`, `C:\Python313` y
+después el PATH; acepta 3.11 o superior), crea `.venv`, instala
+`requirements-lock.txt`, compila la interfaz web y la sonda de TypeScript si
+tienes Node.js, arranca la aplicación desde la carpeta del repositorio y
+abre <http://127.0.0.1:8811> en cuanto `/api/health` responde. Las
+siguientes veces solo reinstala si ha cambiado el archivo de bloqueo.
+**`Detener Babel's Hoard.cmd`** la para.
+
+Pasos a mano:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements-lock.txt
+.venv\Scripts\python -m pip install -r requirements-lock.txt
 cd frontend; npm ci; npm run build; cd ..
 .venv\Scripts\python -m babels_hoard
 ```
 
-Abre <http://127.0.0.1:8811>. Usa `--demo` para ejecutar contra datos
-sintéticos en `data-demo/` (registra el propio intérprete de Babel e indexa
-algunos paquetes reales, para que la interfaz tenga firmas reales que
-mostrar sin tocar tus proyectos) y `--port <p>` / `--data-dir <ruta>` para
-cambiar los valores por defecto. Detén con **`Detener Babel's Hoard.cmd`**.
+Opciones: `--port <p>` (8811 por defecto), `--data-dir <ruta>` (por defecto
+`data\`, o `BABEL_DATA_DIR`), `--no-browser` y `--demo`, que usa
+`data-demo\` e indexa unos cuantos paquetes del intérprete del propio Babel
+para probar la interfaz sin tocar tus proyectos.
 
 ## Arquitectura
 
-Backend FastAPI + SQLite (WAL, FTS5), frontend React 19 + Vite, un adaptador
-MCP por stdio, y un trabajador en segundo plano para el indexado de larga
-duración. Detalles, modelo de datos y las decisiones de análisis estático
-menos obvias: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+FastAPI + SQLite (WAL, una conexión por hilo, FTS5), un hilo de tareas en
+segundo plano, griffe para el análisis estático de Python, la API del
+compilador de TypeScript para las declaraciones, una interfaz React 19 +
+Vite y un adaptador MCP por stdio independiente. Módulos, modelo de datos y
+las decisiones detrás del comprobador:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Tests
 
-```
-.venv/bin/python -m pytest -q
+```powershell
+.venv\Scripts\python -m pytest -q
 ```
 
-**48 tests, ~12-14 s, sin red por defecto** (una instalación de docset
-contra el espejo real de DevDocs se verificó a mano, no en CI): detección y
-sondeo de entornos, indexado de Python contra paquetes reales instalados
-(httpx, la stdlib) y un paquete de prueba con dos versiones creado a
-propósito (`fakelib` 1.x/2.x, que modela una migración al estilo pandas de
-`append` a `concat`), cada regla del comprobador (incluido el caso límite
-de resolución de alias que antes era un falso positivo), búsqueda FTS5,
-instalación de un docset desde un fixture, indexado de carpetas markdown,
-indexado JS/TS contra un paquete `.d.ts` de prueba, la API HTTP completa y
-su protección contra ataques desde el navegador mediante el `TestClient`
-de FastAPI, y el adaptador MCP manejado **a través del protocolo stdio real
-de MCP** contra una instancia real de la app en marcha (no importando sus
-funciones).
+**102 tests, unos 45 s en un contenedor de 2 CPU, sin red.** Cubren: la
+protección frente al navegador y el confinamiento de archivos estáticos
+(intentos de salir de la carpeta), la forma de los errores, las conexiones
+por hilo y que `/api/health` responda mientras corre una herramienta larga;
+el indexado de paquetes reales instalados (httpx, pydantic, fastapi, PyJWT,
+python-dotenv y la biblioteca estándar) y de dos paquetes de prueba:
+`fakelib` 1.x/2.x (una API eliminada entre versiones) y `edgelib` (cada caso
+de espacio de nombres dinámico, decorador, metaclase, sobrecarga y gestor de
+contexto que el comprobador debe resolver bien); una actualización simulada
+en un venv desechable; los nombres de la biblioteca estándar que antes daban
+falsos positivos (`os.getcwd`, `socket.AF_INET`, `re.IGNORECASE`,
+`hashlib.sha256`, `sqlite3.connect`); búsqueda, docsets, markdown e indexado
+de JS/TS (requiere Node.js); y el adaptador MCP lanzado con el **protocolo
+stdio real** contra la aplicación en marcha, incluidas palabras clave,
+anotaciones, ids que se pueden reutilizar y el paso de errores.
 
-`npm run build` en `frontend/` pasa sin errores de TypeScript.
+`npm run build` en `frontend/` termina sin errores de TypeScript. El primer
+arranque de `scripts/start.ps1` (venv, instalación del bloqueo, compilación
+de la interfaz, arranque, espera a `/api/health` y detección de una
+instancia ya en marcha) se ha ejecutado con PowerShell 7 en Linux; el flujo
+de CI define además un trabajo `windows-latest` que ejecuta `start.ps1` y
+`stop.ps1`, que aún no se ha ejecutado porque el repositorio no se ha
+subido.
 
 ## Privacidad y límites
 
-Solo escucha en `127.0.0.1`, sin telemetría. Las únicas dos herramientas
-que tocan la red son `docs_catalog` y `docs_install_docset` (el espejo de
-DevDocs); todo lo demás - sondear intérpretes, indexar paquetes, buscar,
-comprobar código - es enteramente local. El código fuente se lee para
-construir el índice (rutas, firmas, docstrings), pero el código del
-proyecto del usuario nunca se ejecuta, solo se analiza de forma estática.
+Solo escucha en `127.0.0.1`; rechaza peticiones con un `Host` ajeno,
+escrituras desde otros sitios y lecturas de la API desde otros sitios. Sin
+telemetría. Solo el catálogo y la instalación de docsets usan la red (el
+espejo público de DevDocs; su contenido mantiene sus licencias originales).
+Babel ejecuta los intérpretes que registras únicamente para lanzar su
+script de sondeo, que solo usa la biblioteca estándar, y solo si el archivo
+se llama como un intérprete de Python; lee el código instalado y los
+archivos de declaraciones, y nunca importa ni ejecuta el código del
+proyecto ni los fragmentos que comprueba.
