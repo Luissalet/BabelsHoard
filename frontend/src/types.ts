@@ -7,7 +7,22 @@ export interface Environment {
   node_modules_path: string | null;
   node_version: string | null;
   is_builtin: number;
+  is_default?: boolean;
   created_at: string;
+}
+
+export interface InstalledPackage {
+  name: string;
+  version: string;
+  import_names: string[];
+  status: "not_indexed" | "done" | "partial" | "error" | "indexing" | "superseded";
+  entry_count: number;
+}
+
+export interface PackageList {
+  packages: InstalledPackage[];
+  total: number;
+  truncated: boolean;
 }
 
 export interface Library {
@@ -17,7 +32,7 @@ export interface Library {
   version: string;
   source: string;
   env_id: string | null;
-  status: "pending" | "indexing" | "done" | "partial" | "error";
+  status: "pending" | "indexing" | "done" | "partial" | "error" | "superseded";
   entry_count: number;
   note: string | null;
   indexed_at: string | null;
@@ -41,33 +56,43 @@ export interface SearchResult {
   results: SearchHit[];
   count: number;
   truncated: boolean;
+  did_you_mean?: string[];
+  hint?: string;
 }
 
 export interface Param {
   name: string;
   kind: string;
-  annotation: string | null;
-  default: string | null;
-  description: string | null;
+  annotation?: string;
+  default?: string;
+  required?: boolean;
+  description?: string;
 }
 
 export interface LookupResult {
   found: boolean;
-  symbol: string;
+  symbol?: string;
+  id?: string;
   qualname?: string;
   kind?: string;
-  signature?: string;
+  signature?: string | null;
   params?: Param[];
+  params_are?: string;
   returns?: string | null;
   summary?: string | null;
   doc?: string | null;
+  doc_truncated?: boolean;
   deprecated?: boolean;
   deprecated_note?: string | null;
-  source_path?: string | null;
-  source_line?: number | null;
+  source?: string | null;
   library?: string;
-  ecosystem?: string;
-  env_id?: string;
+  env?: string;
+  members?: string[];
+  members_total?: number;
+  other_versions_indexed?: string[];
+  note?: string;
+  same_as?: string;
+  certain?: boolean;
   suggestions?: string[];
   message?: string;
 }
@@ -84,6 +109,7 @@ export interface Finding {
 
 export interface CheckResult {
   ok: boolean;
+  truncated?: boolean;
   findings: Finding[];
   checked: number;
   unchecked: number;
@@ -137,4 +163,5 @@ export interface HealthInfo {
   libraries: number;
   entries: number;
   environments: number;
+  jobs_running?: number;
 }

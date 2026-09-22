@@ -26,15 +26,18 @@ export function ActivityPage({ lang }: { lang: Lang }) {
   }
 
   return (
-    <div className="card">
-      <table className="table">
+    <div className="page card">
+      <div className="text-dim small" style={{ marginBottom: 10 }}>
+        {t(lang, "activity_title")}
+      </div>
+      <table className="table activity-table">
         <thead>
           <tr>
-            <th>{t(lang, "activity_time")}</th>
-            <th>{t(lang, "activity_tool")}</th>
-            <th>Args</th>
-            <th>{t(lang, "activity_duration")}</th>
-            <th>{t(lang, "activity_status")}</th>
+            <th style={{ width: 170 }}>{t(lang, "activity_time")}</th>
+            <th style={{ width: 190 }}>{t(lang, "activity_tool")}</th>
+            <th>{t(lang, "activity_args")}</th>
+            <th style={{ width: 100 }}>{t(lang, "activity_duration")}</th>
+            <th style={{ width: 220 }}>{t(lang, "activity_status")}</th>
           </tr>
         </thead>
         <tbody>

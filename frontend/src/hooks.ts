@@ -42,3 +42,22 @@ export function useLang(): [Lang, (l: Lang) => void] {
 
   return [lang, setLangState];
 }
+
+export function useHashView<T extends string>(views: readonly T[], fallback: T): [T, (v: T) => void] {
+  const read = (): T => {
+    const h = window.location.hash.replace(/^#\/?/, "") as T;
+    return views.includes(h) ? h : fallback;
+  };
+  const [view, setViewState] = useState<T>(read);
+  useEffect(() => {
+    const onHash = () => setViewState(read());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const setView = (v: T) => {
+    if (window.location.hash !== `#/${v}`) window.location.hash = `/${v}`;
+    setViewState(v);
+  };
+  return [view, setView];
+}

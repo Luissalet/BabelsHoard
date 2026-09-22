@@ -8,6 +8,7 @@ import type {
   Job,
   Library,
   LookupResult,
+  PackageList,
   SearchResult,
 } from "./types";
 
@@ -66,14 +67,22 @@ export const api = {
     if (filters?.limit) qs.set("limit", String(filters.limit));
     return request<SearchResult>(`/api/search?${qs}`);
   },
-  lookup: (symbol: string, env?: string, library?: string) =>
-    post<LookupResult>("/api/agent/api_lookup", { symbol, env, library }),
+  // UI endpoints on purpose: /api/agent/* is the assistant's surface and is
+  // recorded in "Assistant activity".
+  lookup: (symbol: string, env?: string, library?: string) => {
+    const qs = new URLSearchParams({ symbol });
+    if (env) qs.set("env", env);
+    if (library) qs.set("library", library);
+    return request<LookupResult>(`/api/lookup?${qs}`);
+  },
+  packages: (envId: string, q = "", limit = 300) =>
+    request<PackageList>(`/api/environments/${encodeURIComponent(envId)}/packages?q=${encodeURIComponent(q)}&limit=${limit}`),
   readEntry: (id: string, offset = 0, max_chars = 4000) =>
-    request<{ found: boolean; text: string; total_chars: number; has_more: boolean; next_offset: number | null }>(
+    request<{ found: boolean; text: string; signature?: string | null; total_chars: number; has_more: boolean; next_offset: number | null }>(
       `/api/entries/${encodeURIComponent(id)}?offset=${offset}&max_chars=${max_chars}`
     ),
   checkCode: (code: string, env?: string, language = "python") =>
-    post<CheckResult>("/api/agent/api_check_code", { code, env, language }),
+    post<CheckResult>("/api/check", { code, env, language }),
   docsets: () => request<DocsetEntry[]>("/api/docsets"),
   docsetCatalog: (q: string, limit = 20) =>
     request<{ results: DocsetCatalogItem[]; total: number }>(`/api/docsets/catalog?q=${encodeURIComponent(q)}&limit=${limit}`),

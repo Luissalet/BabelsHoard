@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Download } from "lucide-react";
+import { BookOpen, Download, Globe } from "lucide-react";
 import { api, ApiError } from "./api";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
@@ -11,6 +11,8 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
   const [catalog, setCatalog] = useState<DocsetCatalogItem[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<Record<string, Job>>({});
+  // The catalogue lives on devdocs.io: only contact it after the user asks.
+  const [browsing, setBrowsing] = useState(false);
 
   const loadInstalled = () => api.docsets().then(setInstalled).catch(() => {});
 
@@ -19,6 +21,7 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
   }, []);
 
   useEffect(() => {
+    if (!browsing) return;
     const handle = setTimeout(() => {
       setCatalogError(null);
       api
@@ -27,15 +30,16 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
         .catch((e) => setCatalogError(e instanceof ApiError ? e.message : String(e)));
     }, 250);
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, browsing]);
 
   useEffect(() => {
     const running = Object.values(jobs).filter((j) => j.status === "queued" || j.status === "running");
     if (running.length === 0) return;
     const id = setInterval(async () => {
-      for (const j of running) {
+      for (const [slug, j] of Object.entries(jobs)) {
+        if (j.status !== "queued" && j.status !== "running") continue;
         const updated = await api.job(j.id);
-        setJobs((prev) => ({ ...prev, [j.id]: updated }));
+        setJobs((prev) => ({ ...prev, [slug]: updated }));
         if (updated.status === "done") loadInstalled();
       }
     }, 900);
@@ -79,8 +83,8 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
                 </span>
               )}
             </div>
-            <span className="text-dim" style={{ fontSize: 11.5 }}>
-              {d.entry_count} sections
+            <span className="text-dim small">
+              {d.entry_count.toLocaleString()} {t(lang, "docsets_sections")}
             </span>
           </div>
         ))}
@@ -88,13 +92,23 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
 
       <div className="card">
         <div className="section-title">{t(lang, "docsets_catalog")}</div>
-        <input
-          className="input"
-          style={{ width: "100%", marginBottom: 12 }}
-          placeholder={t(lang, "docsets_search_placeholder")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="text-dim small" style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12 }}>
+          <Globe size={13} /> {t(lang, "docsets_network_note")}
+        </div>
+        {!browsing && (
+          <button className="btn" onClick={() => setBrowsing(true)}>
+            <Globe size={14} /> {t(lang, "docsets_load_catalog")}
+          </button>
+        )}
+        {browsing && (
+          <input
+            className="input"
+            style={{ width: "100%", marginBottom: 12 }}
+            placeholder={t(lang, "docsets_search_placeholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        )}
         {catalogError && <div className="finding">{catalogError}</div>}
         {catalog?.map((item) => {
           const job = jobs[item.slug];
@@ -107,9 +121,14 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
                   {item.version} · {item.db_size_kb} KB
                 </span>
               </div>
-              {job && job.status !== "done" ? (
-                <span className="text-dim" style={{ fontSize: 11.5 }}>
-                  {t(lang, "docsets_installing")} {Math.round(job.progress * 100)}%
+              {job && job.status === "error" ? (
+                <span className="badge badge-error" title={job.error ?? ""}>{t(lang, "error")}</span>
+              ) : job && job.status !== "done" ? (
+                <span className="install-progress">
+                  <span className="progress-bar" style={{ width: 120 }}>
+                    <span className="progress-bar-fill" style={{ width: `${Math.round(job.progress * 100)}%`, display: "block" }} />
+                  </span>
+                  <span className="text-dim small">{Math.round(job.progress * 100)}%</span>
                 </span>
               ) : (
                 <button className="btn" disabled={already} onClick={() => install(item.slug)}>

@@ -154,3 +154,21 @@ def test_ui_search_endpoint(client):
 
     r6 = client.get("/api/jobs")
     assert isinstance(r6.json(), list)
+
+
+def test_ui_lookup_and_check_are_not_logged_as_assistant_calls(client):
+    client.post("/api/agent/docs_add_environment", json={"path": sys.executable, "index_dependencies": False})
+    before = len(client.get("/api/agent_calls").json())
+    look = client.get("/api/lookup", params={"symbol": "json.dumps"})
+    assert look.status_code == 200 and look.json()["found"] is True
+    chk = client.post("/api/check", json={"code": "import json\njson.dumpz({})\n"})
+    assert chk.status_code == 200 and chk.json()["ok"] is False
+    assert len(client.get("/api/agent_calls").json()) == before
+
+
+def test_installed_packages_listing(client):
+    env_id = client.post(
+        "/api/agent/docs_add_environment", json={"path": sys.executable, "index_dependencies": False}
+    ).json()["environment"]["id"]
+    body = client.get(f"/api/environments/{env_id}/packages", params={"q": "httpx"}).json()
+    assert any(p["name"] == "httpx" and p["status"] in ("not_indexed", "done", "partial") for p in body["packages"])

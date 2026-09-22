@@ -402,7 +402,12 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
     # --------------------------------------------------------- UI-only ---
     @app.get("/api/environments")
     def ui_environments():
-        return environments.list_environments(C())
+        conn = C()
+        default_id = environments.resolve_env(conn, None)["id"]
+        rows = environments.list_environments(conn)
+        for row in rows:
+            row["is_default"] = row["id"] == default_id
+        return rows
 
     @app.get("/api/environments/{env_id}/packages")
     def ui_env_packages(env_id: str, q: str = "", limit: int = 200):
@@ -461,7 +466,23 @@ def create_app(data_dir: Path, static_dir: Path | None, port: int = 8811) -> Fas
 
     @app.get("/api/lookup")
     def ui_lookup(symbol: str, env: str | None = None, library: str | None = None):
-        return search.lookup_with_lazy_index(C(), symbol, env=env, library=library, doc_chars=20000)
+        """Same as api_lookup (full doc), for the UI: not recorded as an assistant call."""
+        try:
+            return search.lookup_with_lazy_index(C(), symbol, env=env, library=library, doc_chars=20000)
+        except environments.ProbeError as exc:
+            raise AgentError("unknown_environment", str(exc), status=404) from exc
+
+    @app.post("/api/check")
+    def ui_check(args: ApiCheckCodeArgs):
+        """Same as api_check_code, for the UI: not recorded as an assistant call."""
+        if args.language not in ("python", "typescript"):
+            raise AgentError("unsupported_language", "language must be 'python' or 'typescript'")
+        conn = C()
+        try:
+            env_row = environments.resolve_env(conn, args.env)
+        except environments.ProbeError as exc:
+            raise AgentError("unknown_environment", str(exc), status=404) from exc
+        return checker.api_check_code(conn, args.code, env_row=env_row, language=args.language)
 
     @app.get("/api/entries/{entry_id:path}")
     def ui_read_entry(entry_id: str, offset: int = 0, max_chars: int = 4000):
