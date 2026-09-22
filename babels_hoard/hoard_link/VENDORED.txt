@@ -1,0 +1,3 @@
+Vendored from HoardLink (https://github.com/Luissalet/HoardLink), version 0.1.1.
+
+Do not edit; replace the whole folder to update.
