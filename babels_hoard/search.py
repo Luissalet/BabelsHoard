@@ -71,12 +71,13 @@ def search(
     limit = max(1, min(limit, 50))
     fts_query = _tokenize_for_query(query)
     sql = f"""
-        SELECT e.id, e.qualname, e.kind, e.signature, e.summary, e.library_id,
+        SELECT e.id, e.qualname, e.kind, e.signature, e.summary, e.library_id, e.target,
                bm25(entries_fts, 10.0, 6.0, 2.0, 2.0, 1.0) AS rank
         FROM entries_fts
         JOIN entries e ON e.rowid = entries_fts.rowid
         JOIN libraries l ON l.id = e.library_id
         WHERE entries_fts MATCH ? AND l.status IN {_CURRENT}
+          AND e.name NOT IN ('__init__', '__call__', '__enter__', '__aenter__')
     """
     params: list[Any] = [fts_query]
     if library:
@@ -92,19 +93,33 @@ def search(
         sql += " AND (l.env_id = ? OR l.env_id IS NULL)"
         params.append(env)
     sql += " ORDER BY rank LIMIT ?"
-    params.append(limit + 1)
+    params.append(limit * 4 + 1)
     try:
-        rows = conn.execute(sql, params).fetchall()
+        fetched = [dict(r) for r in conn.execute(sql, params).fetchall()]
     except Exception:
-        rows = []
+        fetched = []
+    # The same object re-exported under several paths (fastapi.sse.BaseModel
+    # is pydantic's BaseModel) is one hit: keep the path in the package that
+    # defines it, otherwise the best-ranked one.
+    best: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for r in fetched:
+        key = r.get("target") or r["id"]
+        native = bool(r.get("target")) and r["qualname"].split(".", 1)[0] == r["target"].split(".", 1)[0]
+        r["_native"] = native
+        if key not in best:
+            best[key] = r
+            order.append(key)
+        elif native and not best[key]["_native"]:
+            best[key] = r
+    rows = [best[k] for k in order]
     lib_cache: dict[str, Any] = {}
     hits = []
-    for row in rows[:limit]:
-        row_d = dict(row)
+    for row_d in rows[:limit]:
         lib_id = row_d["library_id"]
         if lib_id not in lib_cache:
             lib_cache[lib_id] = db.dump(conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone())
-        hits.append(_row_to_hit(row_d, lib_cache[lib_id], -row["rank"]))
+        hits.append(_row_to_hit(row_d, lib_cache[lib_id], -row_d["rank"]))
     out: dict[str, Any] = {
         "query": query,
         "results": hits,

@@ -286,6 +286,25 @@ def _source_of(obj: Any) -> str:
 
 
 _DOC_CACHE: dict[str, tuple[Any, tuple]] = {}
+_NOT_SUMMARY = re.compile(r"^(!!!|\?\?\?|\.\. |[-=~^]{3,}$|:\w+:|\[!)")
+
+
+def _summary_line(raw: str) -> str | None:
+    """First meaningful line of a docstring: skips mkdocs admonitions
+    (``!!! note "Usage"``), rst directives and underline rulers."""
+    in_block = False
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if in_block and raw_line[:1] in (" ", "\t"):
+            continue  # body of an admonition / directive
+        in_block = False
+        if _NOT_SUMMARY.match(line):
+            in_block = line.startswith(("!!!", "???", ".. "))
+            continue
+        return line[:300]
+    return None
 
 
 def _docstring_param_notes(obj: Any) -> tuple[str | None, dict[str, str], str | None]:
@@ -295,7 +314,7 @@ def _docstring_param_notes(obj: Any) -> tuple[str | None, dict[str, str], str | 
     if doc is None or not doc.value:
         return None, {}, None
     raw = doc.value.strip()
-    summary = raw.splitlines()[0].strip() if raw else None
+    summary = _summary_line(raw)
     if _kind_of(obj) != "function" or ("\n" not in raw):
         return summary, {}, None
     key = getattr(obj, "path", None)
