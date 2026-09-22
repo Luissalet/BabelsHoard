@@ -343,7 +343,7 @@ def lookup_with_lazy_index(
                 installed.extend(indexing.import_names_for(probe, dist))
         except Exception:
             pass
-    close = difflib.get_close_matches(top, installed, n=5, cutoff=0.6)
+    close = difflib.get_close_matches(top, sorted(set(installed)), n=3, cutoff=0.8)
     return {
         "found": False,
         "symbol": symbol,
