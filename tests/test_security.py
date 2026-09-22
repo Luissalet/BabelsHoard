@@ -76,3 +76,16 @@ def test_dns_rebinding_host_rejected_on_every_route(spa_client):
     for path in ("/", "/api/health", "/assets/app.js"):
         r = spa_client.get(path, headers={"Host": f"attacker.example:{PORT}"})
         assert r.status_code == 400
+
+
+def test_cross_site_subresource_gets_to_the_api_are_blocked(spa_client):
+    # <img src="http://127.0.0.1:port/api/lookup?..."> on another site would
+    # otherwise make Babel index packages / run the interpreter probe.
+    headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}
+    assert spa_client.get("/api/lookup?symbol=json.dumps", headers=headers).status_code == 403
+    assert spa_client.get("/api/jobs", headers=headers).status_code == 403
+    # health stays reachable for Faustus / any tab, and so does navigation
+    assert spa_client.get("/api/health", headers=headers).status_code == 200
+    nav = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+    assert spa_client.get("/api/jobs", headers=nav).status_code == 200
+    assert spa_client.get("/", headers=headers).status_code == 200

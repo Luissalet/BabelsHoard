@@ -79,6 +79,21 @@ class BrowserGuardMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "bad_host", "message": f"unexpected Host header: {host!r}"}, status_code=400
             )
+        path = request.url.path
+        if (
+            request.method in ("GET", "HEAD")
+            and path.startswith("/api/")
+            and path != "/api/health"
+            and request.headers.get("sec-fetch-site") == "cross-site"
+            and request.headers.get("sec-fetch-mode") != "navigate"
+        ):
+            # Some API reads have side effects (lazy indexing runs the
+            # interpreter probe); another site must not trigger them through
+            # <img>/<script>/fetch. Top-level navigation keeps working.
+            return JSONResponse(
+                {"error": "cross_site_blocked", "message": "cross-site requests may not call the API"},
+                status_code=403,
+            )
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
             sec_fetch_site = request.headers.get("sec-fetch-site")
