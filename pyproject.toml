@@ -23,9 +23,16 @@ dev = [
     "playwright==1.63.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/Luissalet/BabelsHoard"
+Homepage = "https://github.com/Luissalet/BabelsHoard"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["babels_hoard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
