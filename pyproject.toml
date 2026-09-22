@@ -1,0 +1,31 @@
+[project]
+name = "babels-hoard"
+version = "0.1.0"
+description = "Version-exact API documentation and hallucination checking for the packages actually installed in a project."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Luis Salet" }]
+
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.53.0",
+    "pydantic==2.13.5",
+    "griffe==2.3.0",
+    "httpx==0.28.1",
+    "mcp==1.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "playwright==1.63.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["babels_hoard*"]
