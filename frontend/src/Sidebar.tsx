@@ -1,0 +1,44 @@
+import { Activity, BookOpen, Library, Search, Settings, ShieldCheck } from "lucide-react";
+import type { Lang } from "./i18n";
+import { t } from "./i18n";
+
+export type View = "search" | "libraries" | "check" | "docsets" | "activity" | "settings";
+
+const ITEMS: { view: View; icon: typeof Search; key: Parameters<typeof t>[1] }[] = [
+  { view: "search", icon: Search, key: "nav_search" },
+  { view: "libraries", icon: Library, key: "nav_libraries" },
+  { view: "check", icon: ShieldCheck, key: "nav_check" },
+  { view: "docsets", icon: BookOpen, key: "nav_docsets" },
+  { view: "activity", icon: Activity, key: "nav_activity" },
+  { view: "settings", icon: Settings, key: "nav_settings" },
+];
+
+export function Sidebar({ view, onChange, lang }: { view: View; onChange: (v: View) => void; lang: Lang }) {
+  return (
+    <nav className="sidebar" aria-label="Sections">
+      <div className="sidebar-brand">
+        <div className="sidebar-brand-icon">B</div>
+        <div className="sidebar-brand-text">
+          <div className="sidebar-brand-name">{t(lang, "appName")}</div>
+          <div className="sidebar-brand-tagline">{t(lang, "tagline")}</div>
+        </div>
+      </div>
+      <div className="nav">
+        {ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.view}
+              className={`nav-item${view === item.view ? " active" : ""}`}
+              onClick={() => onChange(item.view)}
+            >
+              <Icon size={17} />
+              <span>{t(lang, item.key)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="sidebar-footer">Babel's Hoard</div>
+    </nav>
+  );
+}
