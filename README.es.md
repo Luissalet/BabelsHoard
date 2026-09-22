@@ -121,7 +121,7 @@ las decisiones detrás del comprobador:
 .venv\Scripts\python -m pytest -q
 ```
 
-**102 tests, unos 45 s en un contenedor de 2 CPU, sin red.** Cubren: la
+**108 tests, entre 40 y 60 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
 protección frente al navegador y el confinamiento de archivos estáticos
 (intentos de salir de la carpeta), la forma de los errores, las conexiones
 por hilo y que `/api/health` responda mientras corre una herramienta larga;
@@ -136,6 +136,15 @@ falsos positivos (`os.getcwd`, `socket.AF_INET`, `re.IGNORECASE`,
 de JS/TS (requiere Node.js); y el adaptador MCP lanzado con el **protocolo
 stdio real** contra la aplicación en marcha, incluidas palabras clave,
 anotaciones, ids que se pueden reutilizar y el paso de errores.
+
+Banco de falsos positivos: `scripts/check_corpus.py` pasa el comprobador
+por el código de paquetes instalados, que funciona, así que cualquier error
+que marque es sospechoso. En 300 archivos tomados de starlette, fastapi,
+httpx, uvicorn, mcp, anyio, pydantic-settings, click, jsonschema, griffe,
+pandas y requests no marca ningún error ni aviso (en la muestra de
+pandas/requests: 4.954 comprobaciones verificadas y 11.551 sin verificar).
+Las cuatro clases de falsos positivos que encontró están corregidas y
+cubiertas por tests.
 
 `npm run build` en `frontend/` termina sin errores de TypeScript. El primer
 arranque de `scripts/start.ps1` (venv, instalación del bloqueo, compilación

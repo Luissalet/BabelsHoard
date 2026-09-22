@@ -124,9 +124,11 @@ Parses `code` (never runs it) and checks every use of an installed library.
 `warning` for `unknown_*` means the namespace is fully known except for a
 dynamic mechanism (`__getattr__`, `setattr(self, name, ...)`, a lazy module)
 that could supply the name. Silent (`unchecked`) cases: values whose type
-is unknown, namespaces that are statically incomplete (star-imports from
-compiled modules, `globals()`, unresolved or builtin base classes, custom
-metaclasses, size caps), private names, calls through unknown decorators,
+is unknown, names narrowed by `isinstance`/`issubclass`/`type` checks,
+namespaces that are statically incomplete (star-imports from compiled
+modules, `globals()`, helpers that write into the module while it is
+imported, unresolved or builtin base classes, custom metaclasses, size
+caps), private names, calls through unknown decorators,
 constructors of classes with `__new__` or custom metaclasses, and code under
 `try/except ImportError|AttributeError|TypeError|Exception`, `hasattr`,
 `getattr`, version or platform checks.

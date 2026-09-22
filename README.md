@@ -119,7 +119,7 @@ Modules, data model and the decisions behind the checker:
 .venv\Scripts\python -m pytest -q
 ```
 
-**102 tests, about 45 s in a 2-CPU container, offline.** They cover: the
+**108 tests, 40-60 s in a shared 2-CPU container, offline.** They cover: the
 browser guard and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
 long tool runs; indexing of real installed packages (httpx, pydantic,
@@ -132,6 +132,14 @@ the stdlib names that used to be false positives (`os.getcwd`,
 search, docsets, markdown and JS/TS indexing (needs Node.js); and the MCP
 adapter spawned over the **real stdio protocol** against a live app,
 including tool keywords, annotations, id round-trips and error pass-through.
+
+False-positive harness: `scripts/check_corpus.py` runs the checker over
+the source of installed packages, which works, so any error it reports is
+suspect. On 300 files sampled from starlette, fastapi, httpx, uvicorn, mcp,
+anyio, pydantic-settings, click, jsonschema, griffe, pandas and requests it
+reports no errors and no warnings (the pandas/requests sample: 4,954
+verified checks, 11,551 left unchecked). Four false-positive classes it
+found are fixed and covered by tests.
 
 `npm run build` in `frontend/` passes with zero TypeScript errors. The
 first-run path of `scripts/start.ps1` (venv, lock install, UI build, start,

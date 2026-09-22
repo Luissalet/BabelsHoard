@@ -90,9 +90,21 @@ library is a single short transaction - rows are computed first, then
 5. **Completeness facts** (`meta_json`, see the `indexing.py` docstring):
    - modules: `dyn=1` for star-imports from compiled or unloaded modules,
      `globals()`/`vars()`/`sys.modules[...]` writes, `@enum.global_enum`
-     (how `re` exports its flags); `dyn="soft"` for a module `__getattr__`;
+     (how `re` exports its flags), and module-level calls that write names
+     into a module while it is imported - decided by reading the callee's
+     source with a small AST data-flow check (writes through `globals()`,
+     `f_globals`, `__dict__` or `sys.modules[...]` aliases; reads do not
+     count), or, when the callee cannot be read, by it being handed
+     `__name__` (enum's `_convert_` in `ssl`); `dyn="soft"` for a module
+     `__getattr__`. Names listed in `__all__` but not defined statically
+     are recorded as existing (lazy exports such as
+     `concurrent.futures.ThreadPoolExecutor`);
    - classes: `dyn=1` for unresolved or builtin bases, metaclasses other
-     than ABCMeta/Enum/Protocol/pydantic's, unknown class decorators;
+     than ABCMeta/Enum/Protocol/pydantic's, unknown class decorators, and
+     classes defined in a module that star-imports code Babel cannot read
+     (the pure-Python `datetime.timezone` is replaced by `_datetime`'s);
+     attributes attached after the class body (`timezone.utc = ...`,
+     `setattr(Color, "GREEN", ...)`) are added as members;
      `dyn="soft"` for `__getattr__` or `setattr(self, <computed name>)`
      outside pickling methods; `ctor` when calling the class runs the
      indexed `__init__` (no `__new__`, compatible metaclass);
@@ -126,7 +138,8 @@ instance, callable with its receiver) using imports, assignments,
 annotations, return annotations, `Self`, `__enter__`/`__aenter__` and
 `await`. Any store to a name forgets it (assignments of unknown values,
 parameters, loop and comprehension targets, `except ... as`, `match`
-captures, `global`); function and class bodies get a copy of the
+captures, `global`), and so does an `isinstance`/`issubclass`/`type` check
+on it (narrowing to a subclass); function and class bodies get a copy of the
 enclosing bindings; comprehension generators are visited before their
 element. Attribute stores/deletes are not checked (they create attributes).
 Code under `try` with import/attribute/type/general exception handlers, and
@@ -135,6 +148,9 @@ version, `TYPE_CHECKING`, `sys.platform` or `os.name`, is guarded: findings
 there are counted as unchecked. Argument checks drop the first parameter
 only for bound methods and constructors, trust overloads for keywords only,
 and skip unknown decorators.
+
+`scripts/check_corpus.py` runs the checker over the source of installed
+packages as a false-positive harness (any error there is suspect).
 
 TypeScript (v1): named imports and re-exports are matched against the
 top-level exports of the installed package's declarations (indexed on
