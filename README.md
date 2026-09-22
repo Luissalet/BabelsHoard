@@ -4,7 +4,7 @@
 ### What does the version on disk actually say?
 **A local, version-exact API index of the packages installed in your projects, and a checker that catches hallucinated or misused APIs in code a model just wrote - without ever running that code.**
 
-[Español](README.es.md) · [Run locally](#run-locally-on-windows) · [Connect an AI](docs/MCP.md) · [Portfolio](https://luissalet.github.io/Portfolio/#projects)
+[Español](README.es.md) · [Quick start](#quick-start) · [Connect to Faustus](#connect-it-to-faustus) · [MCP reference](docs/MCP.md) · [Portfolio](https://luissalet.github.io/Portfolio/#projects)
 
 ![Search: "send a get request" returns httpx.Client.get with the signature of the installed httpx 0.28.1](docs/media/search.png)
 *Actual application, demo data: Babel's own interpreter with httpx, pydantic, fastapi, griffe and the json stdlib module indexed.*
@@ -32,7 +32,7 @@ counted as `unchecked`.
 
 ## Use cases
 
-Each one was walked for real, in the browser and over MCP, on a FastAPI +
+Each one was tried for real, in the browser and over MCP, on a FastAPI +
 React project with 228 installed packages
 ([use cases](docs/USE_CASES.md), [usability report](docs/USABILITY_REPORT.md)):
 
@@ -68,28 +68,61 @@ React project with 228 installed packages
 | Markdown folders | `.md`/`.mdx`/`.rst`/`.txt` split by heading (fenced code aware, rst underlines) | Dependency/VCS/build folders skipped; 2,000 files, 2 MB per file |
 | Assistant audit | Every `/api/agent/*` call (tool, argument summary, duration, result) in "Assistant activity"; the UI uses its own endpoints so only the model's calls appear | Local only |
 | Ask the docs | Search screen: a question is answered from the top search hits by the shared `llm` model, with citations `[id]` that link back to the exact entry (and a Sources list; an id the model invented is shown struck through). When the shared `embeddings` model resolves, the top 50 lexical hits are re-ranked hybrid (reciprocal-rank fusion of the lexical and embedding orders, "semantic re-rank on" badge); otherwise lexical order | Answers only from what is already indexed; a UI feature, not an MCP tool; disabled with the reason shown when no model resolves |
-| Shared model backend | Settings -> Models: which server/model is used for `llm`/`embeddings` right now and why, a Re-check button, manual overrides (Faustus URL/token, per-capability URL/model) | Read [Shared models](#shared-models) below |
+| Shared model backend | Settings -> Models: which server/model is used for `llm`/`embeddings` right now and why, a Re-check button, manual overrides (Faustus URL/token, per-capability URL/model) | Read [Shared models](#shared-models-hoardlink) below |
 | UI | Search, symbol panel, Libraries (installed packages with index status, filling in while the dependency job runs; default environment per language), Check code (line numbers, findings under each line), Docsets (with *Index a folder*), Assistant activity (which environment answered each call), Settings; light/dark, English/Spanish | Single user, local browser; backend messages (findings, notes) are in English |
 
-## Shared models
+## Quick start
 
-Babel's Hoard never loads its own model. For "Ask the docs" it uses two
-capabilities from [Hoard Link](babels_hoard/hoard_link), the shared model
-backend every Faustus plugin vendors: `llm` to answer, `embeddings` to
-semantically re-rank search hits first (hybrid search) when one is
-available. Resolution order in one line: an explicit override in Settings
-or `backend.json`, then a running Faustus instance's own model registry,
-then a shared server already listening on loopback (llama.cpp, Ollama, any
-OpenAI-compatible server) - **the app works fully without any model
-connected**; the "Ask the docs" button is simply disabled with an honest
-reason ("No language model is connected...", plus the probe details as a
-tooltip) and every other screen is unaffected. A broken, hand-edited
-`backend.json` never stops the app: it falls back to auto-detection and
-Settings -> Models says why the file was ignored.
+```
+git clone https://github.com/Luissalet/BabelsHoard.git
+cd BabelsHoard
+```
+
+### Windows
+
+Double-click **`Iniciar Babel's Hoard.cmd`**. On first run
+`scripts/start.ps1` finds Python 3.13 (py launcher, `C:\Python313`, then
+PATH; 3.11+ accepted), creates `.venv`, installs `requirements-lock.txt`,
+builds the web UI and the TypeScript probe if Node.js is installed, starts
+the app from the repository folder and opens <http://127.0.0.1:8811> once
+`/api/health` answers. Later runs reinstall only when the lock file changed.
+**`Detener Babel's Hoard.cmd`** stops it.
+
+Manual steps:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-lock.txt
+cd frontend; npm ci; npm run build; cd ..
+cd babels_hoard\probes; npm ci; cd ..\..
+.venv\Scripts\python -m babels_hoard
+```
+
+### Linux / macOS
+
+Python 3.11 or newer; Node.js 22 for the web UI and TypeScript indexing:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-lock.txt
+(cd frontend && npm ci && npm run build)
+(cd babels_hoard/probes && npm ci)
+.venv/bin/python -m babels_hoard --demo --no-browser
+```
+
+Then open <http://127.0.0.1:8811> (`curl http://127.0.0.1:8811/api/health`
+answers `"service": "babels-hoard"`).
+
+Options: `--port <p>` (default 8811), `--data-dir <path>` (default `data/`,
+or `BABEL_DATA_DIR`), `--no-browser`, and `--demo`, which uses `data-demo/`
+and indexes a few packages of Babel's own interpreter so the UI can be tried
+without touching your projects.
 
 ## Connect it to Faustus
 
-The app declares itself with [`faustus-plugin.json`](faustus-plugin.json).
+Babel's Hoard is a plugin for [Faustus](https://github.com/Luissalet/Faustus),
+the local AI workspace, and declares itself with
+[`faustus-plugin.json`](faustus-plugin.json).
 Start Babel's Hoard, then in Faustus: **Connectors → Nearby apps → Add**.
 Faustus launches the stdio adapter `babels_hoard/mcp_server.py`, which talks
 to the app over loopback.
@@ -125,45 +158,67 @@ Any MCP client can use it over stdio:
 }
 ```
 
-## Run locally on Windows
+## Shared models (HoardLink)
 
-Double-click **`Iniciar Babel's Hoard.cmd`**. On first run
-`scripts/start.ps1` finds Python 3.13 (py launcher, `C:\Python313`, then
-PATH; 3.11+ accepted), creates `.venv`, installs `requirements-lock.txt`,
-builds the web UI and the TypeScript probe if Node.js is installed, starts
-the app from the repository folder and opens <http://127.0.0.1:8811> once
-`/api/health` answers. Later runs reinstall only when the lock file changed.
-**`Detener Babel's Hoard.cmd`** stops it.
-
-Manual steps:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements-lock.txt
-cd frontend; npm ci; npm run build; cd ..
-.venv\Scripts\python -m babels_hoard
-```
-
-Options: `--port <p>` (default 8811), `--data-dir <path>` (default `data\`,
-or `BABEL_DATA_DIR`), `--no-browser`, and `--demo`, which uses `data-demo\`
-and indexes a few packages of Babel's own interpreter so the UI can be tried
-without touching your projects.
+Babel's Hoard never loads its own model. For "Ask the docs" it uses two
+capabilities from [HoardLink](https://github.com/Luissalet/HoardLink)
+(vendored in [`babels_hoard/hoard_link/`](babels_hoard/hoard_link)), the shared
+model backend every Faustus plugin uses: `llm` to answer, `embeddings` to
+semantically re-rank search hits first (hybrid search) when one is
+available. Resolution order in one line: an explicit override in Settings
+or `backend.json`, then a running Faustus instance's own model registry,
+then a shared server already listening on loopback (llama.cpp, Ollama, any
+OpenAI-compatible server) - **the app works fully without any model
+connected**; the "Ask the docs" button is simply disabled with an honest
+reason ("No language model is connected...", plus the probe details as a
+tooltip) and every other screen is unaffected. A broken, hand-edited
+`backend.json` never stops the app: it falls back to auto-detection and
+Settings -> Models says why the file was ignored.
 
 ## Architecture
 
 FastAPI + SQLite (WAL, one connection per thread, FTS5), a background job
 worker, griffe for static Python analysis, the TypeScript compiler API for
 declarations, a React 19 + Vite UI and a standalone stdio MCP adapter.
+
+```mermaid
+flowchart LR
+  UI["React UI"] -->|"/api/*"| API["FastAPI app<br/>127.0.0.1:8811"]
+  MCP["MCP stdio adapter"] -->|"/api/agent/*"| API
+  API --> DB[("SQLite + FTS5 index")]
+  API --> JOBS["background jobs"]
+  API --> IDX["griffe (Python)<br/>TypeScript probe (JS/TS)"]
+  JOBS --> IDX
+  IDX -. "reads, never imports" .-> ENV[".venv / node_modules"]
+  API --> LINK["HoardLink"] -. "optional" .-> MODELS["shared llm / embeddings"]
+```
+
 Modules, data model and the decisions behind the checker:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Tests
+## Privacy and security
+
+Binds `127.0.0.1` only; requests with a foreign `Host`, cross-site writes
+and cross-site API reads are refused. No telemetry. Only the docset
+catalogue and docset installs use the network (the public DevDocs mirror;
+docset content keeps its original licences). Babel runs the interpreters
+you register, only to execute its stdlib-only probe script, and only files
+named like a Python interpreter; it reads installed source and declaration
+files and never imports or executes project code or snippets.
+Every call the assistant makes is listed under **Assistant activity** (tool,
+argument summary, duration, result, and which environment answered).
+
+## Development
 
 ```powershell
+.venv\Scripts\python -m pip install pytest pytest-asyncio
 .venv\Scripts\python -m pytest -q
+cd frontend; npm run build
 ```
 
-**159 tests, 60-135 s in a shared 2-CPU container, offline.** They cover: the
+On Linux/macOS the same with `.venv/bin/python`. **159 tests, about 1-2
+minutes on a shared 2-CPU Linux machine**, with no network, no GPU and no
+model downloads. They cover: the
 browser guard and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
 long tool runs; indexing of real installed packages (httpx, pydantic,
@@ -202,16 +257,30 @@ found are fixed and covered by tests.
 
 `npm run build` in `frontend/` passes with zero TypeScript errors. The
 first-run path of `scripts/start.ps1` (venv, lock install, UI build, start,
-health wait, second-run detection) was run under PowerShell 7 on Linux; the
-CI workflow also defines a `windows-latest` job that runs `start.ps1` and
-`stop.ps1`, which has not run yet because the repository has not been pushed.
+health wait, second-run detection) was run under PowerShell 7 on Linux.
+[CI](.github/workflows/ci.yml) runs the tests on Ubuntu and Windows with
+Python 3.11, 3.12 and 3.13, builds the UI, and on `windows-latest` starts the
+app with `start.ps1` and stops it with `stop.ps1`.
 
-## Privacy and limits
+## Roadmap / known limits
 
-Binds `127.0.0.1` only; requests with a foreign `Host`, cross-site writes
-and cross-site API reads are refused. No telemetry. Only the docset
-catalogue and docset installs use the network (the public DevDocs mirror;
-docset content keeps its original licences). Babel runs the interpreters
-you register, only to execute its stdlib-only probe script, and only files
-named like a Python interpreter; it reads installed source and declaration
-files and never imports or executes project code or snippets.
+- Modules that build their names at import time from platform code (psutil)
+  stay unverifiable rather than risk false errors, so a made-up
+  `psutil.gpu_percent()` is not caught.
+- pydantic v1 configuration idioms (`class Config: orm_mode = True`) are out
+  of reach of a static name check.
+- An on-demand lookup waits for the library the background dependency job is
+  indexing at that moment before it runs.
+- TypeScript checks cover named imports and re-exports only.
+- Finding messages, job progress and library notes come from the backend in
+  English, even in the Spanish interface.
+- Not tried yet: the Windows launchers on a real Windows machine, "Ask the
+  docs" with a real model, docset downloads from the UI and dark-mode
+  screenshots.
+
+The full list of findings and how each was found is in
+[docs/USABILITY_REPORT.md](docs/USABILITY_REPORT.md).
+
+## License
+
+MIT - see [LICENSE](LICENSE).

@@ -4,7 +4,7 @@
 ### ¿Qué dice de verdad la versión que tienes instalada?
 **Un índice local y exacto de las API de los paquetes instalados en tus proyectos, y un comprobador que detecta API inventadas o mal usadas en el código que acaba de escribir un modelo, sin ejecutar nunca ese código.**
 
-[English](README.md) · [Ejecutar en local](#ejecutar-en-local-en-windows) · [Conectar una IA](docs/MCP.md) · [Portfolio](https://luissalet.github.io/Portfolio/#projects)
+[English](README.md) · [Inicio rápido](#inicio-rápido) · [Conectarlo a Faustus](#conectarlo-a-faustus) · [Referencia MCP](docs/MCP.md) · [Portfolio](https://luissalet.github.io/Portfolio/#projects)
 
 ![Búsqueda: «send a get request» devuelve httpx.Client.get con la firma de httpx 0.28.1 instalado](docs/media/search.png)
 *Aplicación real, datos de demostración: el intérprete del propio Babel con httpx, pydantic, fastapi, griffe y el módulo json de la biblioteca estándar indexados.*
@@ -32,7 +32,7 @@ no puede demostrar se cuenta como `unchecked` (sin verificar).
 
 ## Casos de uso
 
-Cada uno se recorrió de verdad, en el navegador y por MCP, sobre un proyecto
+Cada uno se probó de verdad, en el navegador y por MCP, sobre un proyecto
 FastAPI + React con 228 paquetes instalados
 ([casos de uso](docs/USE_CASES.md), [informe de usabilidad](docs/USABILITY_REPORT.md)):
 
@@ -72,31 +72,63 @@ FastAPI + React con 228 paquetes instalados
 | Carpetas de Markdown | `.md`/`.mdx`/`.rst`/`.txt` divididos por encabezado (respetando bloques de código y subrayados de rst) | Se omiten carpetas de dependencias, control de versiones y compilación; 2.000 archivos y 2 MB por archivo |
 | Auditoría del asistente | Cada llamada a `/api/agent/*` (herramienta, resumen de argumentos, duración, resultado) en «Actividad del asistente»; la interfaz usa sus propios endpoints, así que solo aparecen las llamadas del modelo | Solo local |
 | Preguntar a la documentación | Pantalla de Búsqueda: una pregunta se responde a partir de los mejores resultados de búsqueda con el modelo de `llm` compartido, con citas `[id]` que enlazan a la entrada exacta (y una lista de Fuentes; un id inventado por el modelo aparece tachado). Cuando el modelo de `embeddings` compartido resuelve, los 50 mejores resultados léxicos se reordenan de forma híbrida (fusión por rango recíproco del orden léxico y el de embeddings, distintivo «reordenación semántica activa»); si no, orden léxico | Solo responde con lo ya indexado; es una función de la interfaz, no una herramienta MCP; se desactiva mostrando el motivo cuando ningún modelo resuelve |
-| Backend de modelos compartido | Ajustes → Modelos: qué servidor/modelo se usa ahora mismo para `llm`/`embeddings` y por qué, un botón «Comprobar de nuevo», ajustes manuales (URL/token de Faustus, URL/modelo por capacidad) | Ver [Modelos compartidos](#modelos-compartidos) más abajo |
+| Backend de modelos compartido | Ajustes → Modelos: qué servidor/modelo se usa ahora mismo para `llm`/`embeddings` y por qué, un botón «Comprobar de nuevo», ajustes manuales (URL/token de Faustus, URL/modelo por capacidad) | Ver [Modelos compartidos](#modelos-compartidos-hoardlink) más abajo |
 | Interfaz | Búsqueda, panel de símbolo, Librerías (paquetes instalados con su estado de indexado, que se rellena mientras corre la tarea de dependencias; entorno predeterminado por lenguaje), Comprobar código (números de línea, avisos bajo cada línea), Docsets (con *Indexar una carpeta*), Actividad del asistente (qué entorno respondió a cada llamada) y Ajustes; tema claro/oscuro, inglés/español | Un solo usuario, navegador local; los mensajes del backend (avisos, notas) están en inglés |
 
-## Modelos compartidos
+## Inicio rápido
 
-Babel's Hoard nunca carga su propio modelo. Para «Preguntar a la
-documentación» usa dos capacidades de [Hoard Link](babels_hoard/hoard_link),
-el backend de modelos compartido que vendoriza cada plugin de Faustus:
-`llm` para responder, `embeddings` para reordenar semánticamente los
-resultados de búsqueda primero (búsqueda híbrida) cuando hay uno
-disponible. Orden de resolución en una línea: un ajuste manual en Ajustes o
-en `backend.json`, luego el propio registro de modelos de una instancia de
-Faustus en marcha, luego un servidor ya escuchando en loopback (llama.cpp,
-Ollama, cualquier servidor compatible con OpenAI) - **la aplicación
-funciona por completo sin ningún modelo conectado**; el botón «Preguntar a
-la documentación» simplemente queda desactivado con un motivo honesto («No
-hay ningún modelo de lenguaje conectado...», y el detalle de la detección
-como descripción emergente) y el resto de pantallas no se ven afectadas. Un
-`backend.json` roto a mano nunca impide arrancar: la aplicación vuelve a la
-detección automática y Ajustes -> Modelos explica por qué se ignoró el
-archivo.
+```
+git clone https://github.com/Luissalet/BabelsHoard.git
+cd BabelsHoard
+```
+
+### Windows
+
+Haz doble clic en **`Iniciar Babel's Hoard.cmd`**. La primera vez,
+`scripts/start.ps1` busca Python 3.13 (lanzador `py`, `C:\Python313` y
+después el PATH; acepta 3.11 o superior), crea `.venv`, instala
+`requirements-lock.txt`, compila la interfaz web y la sonda de TypeScript si
+tienes Node.js, arranca la aplicación desde la carpeta del repositorio y
+abre <http://127.0.0.1:8811> en cuanto `/api/health` responde. Las
+siguientes veces solo reinstala si ha cambiado el archivo de bloqueo.
+**`Detener Babel's Hoard.cmd`** la para.
+
+Pasos a mano:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-lock.txt
+cd frontend; npm ci; npm run build; cd ..
+cd babels_hoard\probes; npm ci; cd ..\..
+.venv\Scripts\python -m babels_hoard
+```
+
+### Linux / macOS
+
+Python 3.11 o superior; Node.js 22 para la interfaz web y el indexado de
+TypeScript:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-lock.txt
+(cd frontend && npm ci && npm run build)
+(cd babels_hoard/probes && npm ci)
+.venv/bin/python -m babels_hoard --demo --no-browser
+```
+
+Después abre <http://127.0.0.1:8811> (`curl http://127.0.0.1:8811/api/health`
+responde `"service": "babels-hoard"`).
+
+Opciones: `--port <p>` (8811 por defecto), `--data-dir <ruta>` (por defecto
+`data/`, o `BABEL_DATA_DIR`), `--no-browser` y `--demo`, que usa
+`data-demo/` e indexa unos cuantos paquetes del intérprete del propio Babel
+para probar la interfaz sin tocar tus proyectos.
 
 ## Conectarlo a Faustus
 
-La aplicación se declara con [`faustus-plugin.json`](faustus-plugin.json).
+Babel's Hoard es un plugin de [Faustus](https://github.com/Luissalet/Faustus),
+el espacio de trabajo de IA local, y se declara con
+[`faustus-plugin.json`](faustus-plugin.json).
 Arranca Babel's Hoard y en Faustus ve a **Conectores → Apps cercanas →
 Añadir**. Faustus lanza el adaptador stdio `babels_hoard/mcp_server.py`, que
 habla con la aplicación por la interfaz local.
@@ -132,47 +164,75 @@ Funciona con cualquier cliente MCP por stdio:
 }
 ```
 
-## Ejecutar en local en Windows
+## Modelos compartidos (HoardLink)
 
-Haz doble clic en **`Iniciar Babel's Hoard.cmd`**. La primera vez,
-`scripts/start.ps1` busca Python 3.13 (lanzador `py`, `C:\Python313` y
-después el PATH; acepta 3.11 o superior), crea `.venv`, instala
-`requirements-lock.txt`, compila la interfaz web y la sonda de TypeScript si
-tienes Node.js, arranca la aplicación desde la carpeta del repositorio y
-abre <http://127.0.0.1:8811> en cuanto `/api/health` responde. Las
-siguientes veces solo reinstala si ha cambiado el archivo de bloqueo.
-**`Detener Babel's Hoard.cmd`** la para.
-
-Pasos a mano:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements-lock.txt
-cd frontend; npm ci; npm run build; cd ..
-.venv\Scripts\python -m babels_hoard
-```
-
-Opciones: `--port <p>` (8811 por defecto), `--data-dir <ruta>` (por defecto
-`data\`, o `BABEL_DATA_DIR`), `--no-browser` y `--demo`, que usa
-`data-demo\` e indexa unos cuantos paquetes del intérprete del propio Babel
-para probar la interfaz sin tocar tus proyectos.
+Babel's Hoard nunca carga su propio modelo. Para «Preguntar a la
+documentación» usa dos capacidades de
+[HoardLink](https://github.com/Luissalet/HoardLink) (incluida como copia en
+[`babels_hoard/hoard_link/`](babels_hoard/hoard_link)), el backend de modelos
+compartido que usan todos los plugins de Faustus:
+`llm` para responder, `embeddings` para reordenar semánticamente los
+resultados de búsqueda primero (búsqueda híbrida) cuando hay uno
+disponible. Orden de resolución en una línea: un ajuste manual en Ajustes o
+en `backend.json`, luego el propio registro de modelos de una instancia de
+Faustus en marcha, luego un servidor ya escuchando en loopback (llama.cpp,
+Ollama, cualquier servidor compatible con OpenAI) - **la aplicación
+funciona por completo sin ningún modelo conectado**; el botón «Preguntar a
+la documentación» simplemente queda desactivado con un motivo honesto («No
+hay ningún modelo de lenguaje conectado...», y el detalle de la detección
+como descripción emergente) y el resto de pantallas no se ven afectadas. Un
+`backend.json` roto a mano nunca impide arrancar: la aplicación vuelve a la
+detección automática y Ajustes -> Modelos explica por qué se ignoró el
+archivo.
 
 ## Arquitectura
 
 FastAPI + SQLite (WAL, una conexión por hilo, FTS5), un hilo de tareas en
 segundo plano, griffe para el análisis estático de Python, la API del
 compilador de TypeScript para las declaraciones, una interfaz React 19 +
-Vite y un adaptador MCP por stdio independiente. Módulos, modelo de datos y
-las decisiones detrás del comprobador:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Vite y un adaptador MCP por stdio independiente.
 
-## Tests
-
-```powershell
-.venv\Scripts\python -m pytest -q
+```mermaid
+flowchart LR
+  UI["Interfaz React"] -->|"/api/*"| API["Aplicación FastAPI<br/>127.0.0.1:8811"]
+  MCP["Adaptador MCP stdio"] -->|"/api/agent/*"| API
+  API --> DB[("Índice SQLite + FTS5")]
+  API --> JOBS["tareas en segundo plano"]
+  API --> IDX["griffe (Python)<br/>sonda de TypeScript (JS/TS)"]
+  JOBS --> IDX
+  IDX -. "lee, nunca importa" .-> ENV[".venv / node_modules"]
+  API --> LINK["HoardLink"] -. "opcional" .-> MODELS["llm / embeddings compartidos"]
 ```
 
-**159 tests, entre 60 y 135 s en un contenedor compartido de 2 CPU, sin red.** Cubren: la
+Módulos, modelo de datos y las decisiones detrás del comprobador:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Privacidad y seguridad
+
+Solo escucha en `127.0.0.1`; rechaza peticiones con un `Host` ajeno,
+escrituras desde otros sitios y lecturas de la API desde otros sitios. Sin
+telemetría. Solo el catálogo y la instalación de docsets usan la red (el
+espejo público de DevDocs; su contenido mantiene sus licencias originales).
+Babel ejecuta los intérpretes que registras únicamente para lanzar su
+script de sondeo, que solo usa la biblioteca estándar, y solo si el archivo
+se llama como un intérprete de Python; lee el código instalado y los
+archivos de declaraciones, y nunca importa ni ejecuta el código del
+proyecto ni los fragmentos que comprueba.
+Cada llamada del asistente queda registrada en **Actividad del asistente**
+(herramienta, resumen de argumentos, duración, resultado y qué entorno
+respondió).
+
+## Desarrollo
+
+```powershell
+.venv\Scripts\python -m pip install pytest pytest-asyncio
+.venv\Scripts\python -m pytest -q
+cd frontend; npm run build
+```
+
+En Linux/macOS, lo mismo con `.venv/bin/python`. **159 tests, entre 1 y 2
+minutos en una máquina Linux compartida de 2 CPU**, sin red, sin GPU y sin
+descargar modelos. Cubren: la
 protección frente al navegador y el confinamiento de archivos estáticos
 (intentos de salir de la carpeta), la forma de los errores, las conexiones
 por hilo y que `/api/health` responda mientras corre una herramienta larga;
@@ -219,19 +279,32 @@ corregidas y cubiertas por tests.
 `npm run build` en `frontend/` termina sin errores de TypeScript. El primer
 arranque de `scripts/start.ps1` (venv, instalación del bloqueo, compilación
 de la interfaz, arranque, espera a `/api/health` y detección de una
-instancia ya en marcha) se ha ejecutado con PowerShell 7 en Linux; el flujo
-de CI define además un trabajo `windows-latest` que ejecuta `start.ps1` y
-`stop.ps1`, que aún no se ha ejecutado porque el repositorio no se ha
-subido.
+instancia ya en marcha) se ha ejecutado con PowerShell 7 en Linux. La
+[integración continua](.github/workflows/ci.yml) pasa los tests en Ubuntu y
+Windows con Python 3.11, 3.12 y 3.13, compila la interfaz y, en
+`windows-latest`, arranca la aplicación con `start.ps1` y la detiene con
+`stop.ps1`.
 
-## Privacidad y límites
+## Hoja de ruta y límites conocidos
 
-Solo escucha en `127.0.0.1`; rechaza peticiones con un `Host` ajeno,
-escrituras desde otros sitios y lecturas de la API desde otros sitios. Sin
-telemetría. Solo el catálogo y la instalación de docsets usan la red (el
-espejo público de DevDocs; su contenido mantiene sus licencias originales).
-Babel ejecuta los intérpretes que registras únicamente para lanzar su
-script de sondeo, que solo usa la biblioteca estándar, y solo si el archivo
-se llama como un intérprete de Python; lee el código instalado y los
-archivos de declaraciones, y nunca importa ni ejecuta el código del
-proyecto ni los fragmentos que comprueba.
+- Los módulos que generan sus nombres al importarse a partir de código de la
+  plataforma (psutil) quedan sin verificar para no arriesgarse a errores
+  falsos, así que un `psutil.gpu_percent()` inventado no se detecta.
+- Los patrones de configuración de pydantic v1 (`class Config: orm_mode =
+  True`) quedan fuera del alcance de una comprobación estática de nombres.
+- Una consulta bajo demanda espera a que la tarea de dependencias termine la
+  librería que está indexando en ese momento.
+- En TypeScript solo se comprueban las importaciones y reexportaciones con
+  nombre.
+- Los mensajes de los avisos, el progreso de las tareas y las notas de las
+  librerías llegan del backend en inglés, también con la interfaz en español.
+- Pendiente de probar: los lanzadores en un Windows real, «Preguntar a la
+  documentación» con un modelo de verdad, la descarga de docsets desde la
+  interfaz y las capturas en modo oscuro.
+
+La lista completa de hallazgos y cómo se encontró cada uno está en
+[docs/USABILITY_REPORT.md](docs/USABILITY_REPORT.md).
+
+## Licencia
+
+MIT: consulta [LICENSE](LICENSE).
