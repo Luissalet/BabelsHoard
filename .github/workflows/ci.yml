@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Create venv and install
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./.venv/Scripts/pip install --disable-pip-version-check -q -r requirements-lock.txt
+            ./.venv/Scripts/pip install --disable-pip-version-check -q pytest pytest-asyncio
+          else
+            ./.venv/bin/pip install --disable-pip-version-check -q -r requirements-lock.txt
+            ./.venv/bin/pip install --disable-pip-version-check -q pytest pytest-asyncio
+          fi
+
+      - name: Install probe npm deps (TypeScript compiler API)
+        working-directory: babels_hoard/probes
+        run: npm ci --no-audit --no-fund
+
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./.venv/Scripts/python -m pytest -q
+          else
+            ./.venv/bin/python -m pytest -q
+          fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm run build
