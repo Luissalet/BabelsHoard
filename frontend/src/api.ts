@@ -1,5 +1,8 @@
 import type {
   AgentCall,
+  AskResult,
+  BackendConfig,
+  BackendStatus,
   CheckResult,
   DocsetCatalogItem,
   DocsetEntry,
@@ -41,6 +44,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+function put<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "PUT", body: JSON.stringify(body) });
 }
 
 export const api = {
@@ -91,4 +98,16 @@ export const api = {
   jobs: (limit = 20) => request<Job[]>(`/api/jobs?limit=${limit}`),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   agentCalls: (limit = 50) => request<AgentCall[]>(`/api/agent_calls?limit=${limit}`),
+  // Shared model backend (Hoard Link): Settings -> Models.
+  backendStatus: () => request<BackendStatus>("/api/backend"),
+  backendConfigGet: () => request<BackendConfig>("/api/backend/config"),
+  backendConfig: (patch: {
+    only_resident?: boolean;
+    faustus?: { url?: string; token?: string };
+    capabilities?: Record<string, { url?: string; model?: string }>;
+  }) => put<{ config: BackendConfig; status: BackendStatus }>("/api/backend/config", patch),
+  backendRecheck: () => post<BackendStatus>("/api/backend/recheck", {}),
+  // "Ask the docs": UI-only, like /api/search and /api/lookup.
+  ask: (question: string, filters?: { library?: string; ecosystem?: string; kind?: string; env?: string }) =>
+    post<AskResult>("/api/ask", { question, ...filters }),
 };

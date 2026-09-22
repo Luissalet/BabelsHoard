@@ -155,6 +155,53 @@ export interface AgentCall {
   error: string | null;
 }
 
+export interface BackendCapability {
+  capability: string;
+  provider: string | null;
+  url: string | null;
+  model: string | null;
+  api: string | null;
+  state: "resolved" | "unavailable";
+  reason: string;
+  details?: Record<string, unknown>;
+}
+
+export interface BackendStatus {
+  used: string[];
+  capabilities: Record<string, BackendCapability>;
+}
+
+export interface BackendConfig {
+  only_resident: boolean;
+  faustus: { url?: string; token_set: boolean };
+  comfy: { url?: string };
+  capabilities: Record<string, { url?: string; model?: string }>;
+}
+
+export interface AskEntry {
+  id: string;
+  qualname: string;
+  kind: string;
+  library: string | null;
+  signature: string;
+  summary: string;
+}
+
+export interface AskResult {
+  available: boolean;
+  answered?: boolean;
+  reason?: string;
+  message?: string;
+  question?: string;
+  answer?: string;
+  cited?: string[];
+  entries?: AskEntry[];
+  semantic_rerank?: boolean;
+  model?: string | null;
+  provider?: string | null;
+  did_you_mean?: string[];
+}
+
 export interface HealthInfo {
   service: string;
   name: string;

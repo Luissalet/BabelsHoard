@@ -723,6 +723,39 @@ table.table tr:last-child td {
   gap: 14px;
 }
 
+.models-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.models-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ask-answer {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.ask-cite {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }

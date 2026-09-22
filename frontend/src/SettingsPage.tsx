@@ -4,6 +4,7 @@ import { api } from "./api";
 import type { Theme } from "./hooks";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
+import { ModelsPanel } from "./ModelsPanel";
 import type { HealthInfo } from "./types";
 
 export function SettingsPage({
@@ -25,6 +26,8 @@ export function SettingsPage({
 
   return (
     <div className="stack-gap">
+      <ModelsPanel lang={lang} />
+
       <div className="card">
         <div className="section-title">{t(lang, "settings_theme")}</div>
         <div className="chip-row" style={{ margin: 0 }}>
