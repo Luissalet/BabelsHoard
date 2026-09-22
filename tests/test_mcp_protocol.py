@@ -100,7 +100,7 @@ async def test_mcp_stdio_list_and_call_tools(live_app):
             assert body["kind"] == "function"
 
             check = await session.call_tool(
-                "api_check_code", {"code": "import os\nos.this_does_not_exist()\n"}
+                "api_check_code", {"code": "import json\njson.this_does_not_exist()\n"}
             )
             check_body = json.loads(check.content[0].text)
             assert check_body["ok"] is False
@@ -122,3 +122,64 @@ async def test_mcp_reports_clear_error_when_app_not_running():
             result = await session.call_tool("docs_libraries", {})
             assert result.isError is True
             assert "babel_unavailable" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_contract_for_a_local_model(live_app, tmp_path):
+    """Every tool is described for retrieval (English + Spanish keywords),
+    annotated honestly, returns stable ids that round-trip, and passes the
+    app's actionable error text through."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    env = dict(os.environ)
+    env["BABEL_URL"] = f"http://127.0.0.1:{live_app.port}"
+    params = StdioServerParameters(command=sys.executable, args=[str(MCP_SERVER)], env=env)
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            init = await session.initialize()
+            assert "not instructions" in (init.instructions or "")
+            tools = {t.name: t for t in (await session.list_tools()).tools}
+            for name, tool in tools.items():
+                assert "Keywords:" in tool.description, name
+                keywords = tool.description.split("Keywords:", 1)[1]
+                assert any(w in keywords for w in ("buscar", "firma", "comprobar", "leer", "listar", "registrar", "catalogo", "instalar", "indexar")), name
+                ann = tool.annotations
+                assert ann is not None and ann.destructiveHint is False, name
+            network = {n for n, t in tools.items() if t.annotations.openWorldHint}
+            assert network == {"docs_catalog", "docs_install_docset"}
+            writers = {n for n, t in tools.items() if not t.annotations.readOnlyHint}
+            assert writers == {"docs_add_environment", "docs_install_docset", "docs_index_folder"}
+
+            await session.call_tool("docs_add_environment", {"path": sys.executable, "index_dependencies": False})
+            found = json.loads((await session.call_tool("api_lookup", {"symbol": "json.dumps"})).content[0].text)
+            assert found["params"] and all("name" in p for p in found["params"])
+            read = json.loads((await session.call_tool("docs_read", {"id": found["id"], "max_chars": 200})).content[0].text)
+            assert read["found"] is True and read["qualname"] == "json.dumps"
+
+            libs = json.loads((await session.call_tool("docs_libraries", {})).content[0].text)
+            assert any(e["default"] for e in libs["environments"])
+            assert all(set(lib) <= {"id", "ecosystem", "name", "version", "env", "status", "entries"} for lib in libs["libraries"])
+
+            bad = await session.call_tool("docs_index_folder", {"path": str(tmp_path / "missing")})
+            assert bad.isError is True
+            assert "bad_path" in bad.content[0].text and "not a directory" in bad.content[0].text
+
+            invalid = await session.call_tool("api_check_code", {"code": "x = 1", "language": "cobol"})
+            assert invalid.isError is True and "unsupported_language" in invalid.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_mcp_refuses_non_loopback_url_with_a_clear_message():
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    env = dict(os.environ)
+    env["BABEL_URL"] = "http://example.com:8811"
+    params = StdioServerParameters(command=sys.executable, args=[str(MCP_SERVER)], env=env)
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("docs_libraries", {})
+            assert result.isError is True
+            assert "babel_misconfigured" in result.content[0].text
