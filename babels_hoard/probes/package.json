@@ -1,0 +1,10 @@
+{
+  "name": "babels-hoard-probes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TypeScript compiler API probe used by Babel's Hoard to index node_modules type declarations. Installed on demand with 'npm ci' run from this folder.",
+  "type": "module",
+  "dependencies": {
+    "typescript": "5.9.3"
+  }
+}

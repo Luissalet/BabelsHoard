@@ -1,0 +1,4 @@
+{
+  "guide": "<h1 id=\"start\">Getting Started</h1><p>Install the widget with <code>pip install widget</code>.</p><h2 id=\"advanced\">Advanced Usage</h2><p>Pass <code>strict=True</code> for strict mode.</p>",
+  "faq": "<h1>FAQ</h1><p>Widgets are made of wood.</p>"
+}

@@ -1,0 +1,8 @@
+{
+  "entries": [
+    {"name": "Getting Started", "path": "guide#start", "type": "Guide"},
+    {"name": "Advanced Usage", "path": "guide#advanced", "type": "Guide"},
+    {"name": "FAQ", "path": "faq", "type": "Reference"}
+  ],
+  "types": [{"name": "Guide", "count": 2}, {"name": "Reference", "count": 1}]
+}
