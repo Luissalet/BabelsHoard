@@ -30,8 +30,8 @@ Reglas para agentes de código que trabajen en este repositorio.
   nunca `/api/agent/*`.
 - Nada de `window.confirm`/`alert` en el frontend; textos en `i18n.ts`
   (inglés y español de España).
-- Commits en inglés, sin nombres de otros productos ni datos personales, con
-  la identidad y los trailers del contrato.
+- Commits en inglés, pequeños y sin nombres de otros productos ni datos
+  personales.
 
 ## Antes de dar algo por terminado
 

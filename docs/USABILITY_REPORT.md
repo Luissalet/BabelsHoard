@@ -11,8 +11,8 @@ scenario (same data, same scripts, a fresh data folder) are in
 
 ## Test setup
 
-- **Project:** `data-uxtest/faustus-like/` (gitignored), shaped like a large
-  real project: `.venv` at the root with **228 installed
+- **Project:** a synthetic test project (kept out of the repository),
+  shaped like a large real one: `.venv` at the root with **228 installed
   distributions** (fastapi 0.141.1, httpx 0.28.1, pydantic 2.13.5,
   pydantic-settings 2.15.0, SQLAlchemy 2.0.54, fastembed 0.8.1, psutil
   7.2.2, numpy, pandas, chromadb, openai, mcp, alembic, pytest, mypy, ruff,
@@ -27,8 +27,8 @@ scenario (same data, same scripts, a fresh data folder) are in
   sse-starlette). It is known-correct: its own test imports it and drives
   every endpoint through `TestClient` (1 passed) and `mypy` reports no
   issues.
-- **Machine:** shared Linux container, 2 CPUs, 7 GB RAM, with other agents
-  building sibling apps at the same time (load average 16-17 during most
+- **Machine:** shared Linux container, 2 CPUs, 7 GB RAM, with other heavy
+  workloads running at the same time (load average 16-17 during most
   runs), so absolute timings are pessimistic. Relative timings (with and
   without the background job, cold and warm) are the useful part.
 
@@ -87,7 +87,7 @@ are missing: `sqlalchemy.ext.asyncio` is not indexed at all.**
 "async sessionmaker" returns `sqlalchemy.orm.sessionmaker.kw` first. The
 same cap hits numpy, pandas, openai and mypy. It also explains most of the
 145 unverifiable uses in UC5.
-*Fix planned (lazy indexing, as asked):* when a lookup or check reaches a
+*Fix planned (lazy indexing):* when a lookup or check reaches a
 module that was not expanded because of the cap (`nx`/`trunc`), index that
 submodule's subtree on demand and merge it into the library, so the cap
 bounds the eager pass, not what can ever be answered. Test with a fixture
