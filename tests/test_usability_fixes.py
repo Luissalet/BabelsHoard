@@ -65,7 +65,9 @@ def test_b3_pytest_fixture_is_found_after_the_dependency_job(conn, builtin_env, 
 # --------------------------------------------------------------------- B1 --
 import os  # noqa: E402
 import shutil  # noqa: E402
-import sys  # noqa: E402
+import subprocess  # noqa: E402
+import sysconfig  # noqa: E402
+import venv  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
@@ -78,11 +80,27 @@ FIXTURES = Path(__file__).parent / "fixtures"
 PORT = 18814
 
 
+def _test_venv(path: Path) -> None:
+    """A real, pip-less venv at ``path`` that sees the test interpreter's packages.
+
+    A bare symlink to ``sys.executable`` is not enough: with no
+    ``pyvenv.cfg`` next to it Python resolves the link to the base
+    interpreter and loses this venv's site-packages (httpx and friends),
+    which only works by accident where the base interpreter has them too.
+    """
+    venv.create(path, symlinks=os.name != "nt", with_pip=False)
+    probe = subprocess.run(
+        [str(environments.detect_project_python(path.parent)), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        capture_output=True, text=True, check=True,
+    )
+    shared = {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}
+    Path(probe.stdout.strip(), "test-interpreter.pth").write_text("\n".join(sorted(shared)) + "\n")
+
+
 def _fullstack_project(root: Path) -> Path:
-    """<root>/.venv/bin/python (the test interpreter) + frontend/node_modules."""
-    bin_dir = root / ".venv" / "bin"
-    bin_dir.mkdir(parents=True)
-    os.symlink(sys.executable, bin_dir / "python")
+    """<root>/.venv (seeing the test interpreter's packages) + frontend/node_modules."""
+    root.mkdir(parents=True)
+    _test_venv(root / ".venv")
     shutil.copytree(FIXTURES / "jspkg_node_modules", root / "frontend" / "node_modules")
     return root
 
@@ -94,7 +112,7 @@ def fullstack(tmp_path):
 
 def test_b1_registering_the_root_finds_the_frontend_node_modules(conn, fullstack):
     env = environments.register_environment(conn, str(fullstack))
-    assert env["python_path"].endswith("python")
+    assert Path(env["python_path"]).stem == "python"
     assert env["node_modules_path"] == str(fullstack / "frontend" / "node_modules")
 
 
@@ -123,8 +141,8 @@ def test_b1_registering_again_makes_it_the_default_and_keeps_its_id(conn, builti
 
 def test_b1_same_interpreter_keeps_its_id_when_node_modules_appears(conn, tmp_path):
     proj = tmp_path / "late"
-    (proj / ".venv" / "bin").mkdir(parents=True)
-    os.symlink(sys.executable, proj / ".venv" / "bin" / "python")
+    proj.mkdir()
+    _test_venv(proj / ".venv")
     before = environments.register_environment(conn, str(proj))
     shutil.copytree(FIXTURES / "jspkg_node_modules", proj / "web" / "node_modules")
     after = environments.register_environment(conn, str(proj))
