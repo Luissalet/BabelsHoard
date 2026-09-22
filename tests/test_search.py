@@ -17,9 +17,11 @@ def test_search_filters_by_kind(conn, builtin_env, probe):
 
 def test_api_lookup_not_found_gives_suggestions(conn, builtin_env, probe):
     indexing.index_python_library(conn, env=builtin_env, probe=probe, import_name="httpx")
-    result = search.api_lookup(conn, "httpx.Client.gett", env_row=builtin_env)
+    result = search.lookup_with_lazy_index(conn, "httpx.Client.gett", env=builtin_env["id"])
     assert result["found"] is False
-    assert "get" in result["suggestions"]
+    assert result["certain"] is True
+    assert "httpx.Client.get" in result["suggestions"]
+    assert "does not exist in httpx 0.28.1" in result["message"]
 
 
 def test_docs_read_pagination(conn, builtin_env, probe):
