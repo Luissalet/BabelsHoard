@@ -58,3 +58,36 @@ jobs:
         run: npm ci
       - working-directory: frontend
         run: npm run build
+
+  windows-launcher:
+    # Exercises the double-click path on real Windows: start.ps1 creates the
+    # venv, installs the lock, builds the UI, starts the app and waits for
+    # /api/health; stop.ps1 must then stop it (venv launcher + child).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Start with scripts/start.ps1
+        shell: pwsh
+        run: |
+          Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/start.ps1','-NoBrowser' | Out-Null
+          $ok = $false
+          for ($i = 0; $i -lt 300; $i++) {
+            try { $h = Invoke-RestMethod http://127.0.0.1:8811/api/health -TimeoutSec 2; if ($h.service -eq 'babels-hoard') { $ok = $true; break } } catch { }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ok) { throw 'Babel''s Hoard did not become healthy' }
+          if (-not (Test-Path faustus-plugin.json)) { throw 'manifest missing' }
+      - name: Stop with scripts/stop.ps1
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop.ps1
+          Start-Sleep -Seconds 3
+          $alive = $true
+          try { Invoke-RestMethod http://127.0.0.1:8811/api/health -TimeoutSec 2 | Out-Null } catch { $alive = $false }
+          if ($alive) { throw 'still running after stop.ps1' }
