@@ -324,14 +324,17 @@ def lookup_with_lazy_index(
     Indexes the package (or its newly installed version) on first need.
     """
     symbol = symbol.strip().strip("`").removesuffix("()")
-    env_row = environments.resolve_env(conn, env)
+    # Without env, Python symbols are answered by the default Python
+    # environment and npm symbols by the default node_modules one.
+    env_row = environments.resolve_env(conn, env, "python")
+    js_env_row = env_row if env else environments.resolve_env(conn, None, "typescript")
     if library and library.lower() in ("js", "npm"):
         library = None
     result = None
     if not symbol.startswith("@"):
         result = _python_lookup(conn, symbol, env_row, doc_chars)
     if result is None:
-        result = _js_lookup(conn, symbol, env_row, doc_chars)
+        result = _js_lookup(conn, symbol, js_env_row, doc_chars)
     if result is not None:
         return result
     top = symbol.split(".")[0]
@@ -344,16 +347,24 @@ def lookup_with_lazy_index(
         except Exception:
             pass
     close = difflib.get_close_matches(top, sorted(set(installed)), n=3, cutoff=0.8)
+    if not env_row.get("python_path"):
+        message = (
+            f"'{top}' is not an npm package in {env_row.get('label')}, and this environment has no Python "
+            "interpreter (node_modules only). For a Python symbol pass the env id of the project's Python "
+            "environment (docs_libraries lists them), or omit env."
+        )
+    else:
+        message = (
+            f"'{top}' is not installed (or not importable) in {env_row.get('label')}"
+            f"{' (Python ' + env_row['python_version'] + ')' if env_row.get('python_version') else ''}. "
+            "If it belongs to another project, register it with docs_add_environment and pass env."
+        )
     return {
         "found": False,
         "symbol": symbol,
         "certain": False,
         "suggestions": close,
-        "message": (
-            f"'{top}' is not installed (or not importable) in {env_row.get('label')}"
-            f"{' (Python ' + env_row['python_version'] + ')' if env_row.get('python_version') else ''}. "
-            "If it belongs to another project, register it with docs_add_environment and pass env."
-        ),
+        "message": message,
         "env": env_row["id"],
     }
 

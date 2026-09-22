@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +43,19 @@ def detect_project_python(project_dir: Path) -> Path | None:
     return None
 
 
+# Where a combined Python + web project usually keeps its frontend, so
+# registering the project root also finds ``<root>/frontend/node_modules``.
+FRONTEND_SUBDIRS = ("frontend", "web", "client", "ui", "webapp", "app")
+
+
 def detect_node_modules(project_dir: Path) -> Path | None:
     candidate = project_dir / "node_modules"
     if candidate.is_dir():
         return candidate
+    for sub in FRONTEND_SUBDIRS:
+        candidate = project_dir / sub / "node_modules"
+        if candidate.is_dir():
+            return candidate
     return None
 
 
@@ -204,8 +214,19 @@ def register_environment(
         str(python_path) if python_path else None,
         str(node_modules_path) if node_modules_path else None,
     )
+    # The same interpreter registered before (e.g. before its frontend's
+    # node_modules existed or was detected) keeps its id, so its indexes and
+    # the ids a model already holds stay valid.
+    if python_path is not None:
+        same = conn.execute(
+            "SELECT id FROM environments WHERE python_path=? AND is_builtin=?", (str(python_path), int(is_builtin))
+        ).fetchone()
+        if same:
+            env_id = same["id"]
     display_label = label or (str(project_path) if project_path else str(p))
 
+    # created_at is the time of the latest registration: registering a
+    # project again makes it the default again.
     conn.execute(
         """
         INSERT INTO environments (id, label, project_path, python_path, python_version,
@@ -213,7 +234,9 @@ def register_environment(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             label=excluded.label, python_version=excluded.python_version,
-            node_version=excluded.node_version
+            node_version=excluded.node_version,
+            node_modules_path=COALESCE(excluded.node_modules_path, environments.node_modules_path),
+            created_at=CASE WHEN environments.is_builtin=1 THEN environments.created_at ELSE excluded.created_at END
         """,
         (
             env_id,
@@ -224,7 +247,7 @@ def register_environment(
             str(node_modules_path) if node_modules_path else None,
             node_version,
             int(is_builtin),
-            db.now(),
+            _registration_time(),
         ),
     )
     conn.commit()
@@ -232,6 +255,13 @@ def register_environment(
     result = db.dump(row)
     result["probe"] = probe_result
     return result
+
+
+def _registration_time() -> str:
+    """Like ``db.now()`` with milliseconds, so two registrations in the same
+    second still order correctly (the newest is the default)."""
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
 
 
 def _read_node_version(project_path: Path | None) -> str | None:
@@ -257,7 +287,7 @@ def builtin_env_id(conn) -> str:
 
 
 def list_environments(conn) -> list[dict[str, Any]]:
-    rows = conn.execute("SELECT * FROM environments ORDER BY created_at").fetchall()
+    rows = conn.execute("SELECT * FROM environments ORDER BY created_at, rowid").fetchall()
     return db.dump_all(rows)
 
 
@@ -266,11 +296,35 @@ def get_environment(conn, env_id: str) -> dict[str, Any] | None:
     return db.dump(row)
 
 
-def resolve_env(conn, env: str | None) -> dict[str, Any]:
+class UnknownEnvironment(ProbeError):
+    pass
+
+
+class NoPython(ProbeError):
+    pass
+
+
+_CAPABILITY = {"python": "python_path", "typescript": "node_modules_path", "js": "node_modules_path"}
+
+
+def _default_env(conn, language: str | None) -> dict[str, Any] | None:
+    column = _CAPABILITY.get(language or "")
+    where = f" AND {column} IS NOT NULL" if column else ""
+    row = conn.execute(
+        f"SELECT * FROM environments WHERE is_builtin=0{where} ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).fetchone()
+    return db.dump(row)
+
+
+def resolve_env(conn, env: str | None, language: str | None = None) -> dict[str, Any]:
     """Resolve ``env`` (an id, a project path, or None) to an environment row.
 
-    None means: the most recently registered project environment, falling
-    back to the builtin interpreter.
+    None means the default *for the language*: the most recently registered
+    project that has a Python interpreter (``language="python"``) or a
+    node_modules folder (``"typescript"``), falling back to the builtin
+    interpreter. Without a language: the most recently registered project.
+    A frontend-only environment is therefore never the default for Python
+    checks and lookups.
     """
     if env:
         row = conn.execute("SELECT * FROM environments WHERE id=?", (env,)).fetchone()
@@ -279,21 +333,41 @@ def resolve_env(conn, env: str | None) -> dict[str, Any]:
         # Maybe it's a path that is already registered.
         p = str(Path(env).expanduser())
         row = conn.execute(
-            "SELECT * FROM environments WHERE project_path=? OR python_path=?", (p, p)
+            "SELECT * FROM environments WHERE project_path=? OR python_path=? OR node_modules_path=? "
+            "ORDER BY python_path IS NULL, created_at DESC",
+            (p, p, p),
         ).fetchone()
         if row:
             return db.dump(row)
-        raise ProbeError(f"unknown environment: {env!r}")
-    row = conn.execute(
-        "SELECT * FROM environments WHERE is_builtin=0 ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
+        known = ", ".join(f"{r['id']} ({r['label']})" for r in list_environments(conn)[-5:])
+        raise UnknownEnvironment(
+            f"unknown environment: {env!r}. If it is a project folder, register it first with "
+            f"docs_add_environment(path); otherwise pass an env id from docs_libraries (known: {known})."
+        )
+    row = _default_env(conn, language)
+    if row is None and language in ("typescript", "js"):
+        row = _default_env(conn, None)
     if row:
-        return db.dump(row)
+        return row
     row = conn.execute("SELECT * FROM environments WHERE is_builtin=1 LIMIT 1").fetchone()
     if row:
         return db.dump(row)
     env_id = builtin_env_id(conn)
     return get_environment(conn, env_id)
+
+
+def require_python(conn, env_row: dict[str, Any]) -> None:
+    """Python checks/lookups need an interpreter; a node_modules-only
+    environment would silently verify nothing."""
+    if env_row.get("python_path"):
+        return
+    others = [r for r in list_environments(conn) if r.get("python_path")]
+    choices = ", ".join(f"{r['id']} ({r['label']})" for r in others[-4:]) or "none registered"
+    raise NoPython(
+        f"environment {env_row['id']} ({env_row['label']}) has no Python interpreter, only node_modules, "
+        f"so Python code cannot be checked against it. Pass env=<id> of a Python environment ({choices}), "
+        "or omit env to use the default Python environment."
+    )
 
 
 def compact_env(row: dict[str, Any]) -> dict[str, Any]:
@@ -308,12 +382,23 @@ def compact_env(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def default_ids(conn) -> dict[str, str]:
+    """{language: env id used when a call omits env}."""
+    return {lang: resolve_env(conn, None, lang)["id"] for lang in ("python", "typescript")}
+
+
 def compact_environments(conn) -> list[dict[str, Any]]:
-    default = resolve_env(conn, None)
+    defaults = default_ids(conn)
     out = []
     for row in list_environments(conn):
         item = compact_env(row)
-        item["default"] = row["id"] == default["id"]
+        item["default"] = row["id"] == defaults["python"]
+        default_for = [
+            lang for lang, env_id in defaults.items()
+            if env_id == row["id"] and row.get(_CAPABILITY[lang])
+        ]
+        if default_for:
+            item["default_for"] = default_for
         out.append(item)
     return out
 

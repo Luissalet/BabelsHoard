@@ -47,11 +47,15 @@ function PackageList({ env, lang, onIndexed }: { env: Environment; lang: Lang; o
   }, [filter, env.id]);
 
   async function index(pkg: InstalledPackage) {
-    const importName = pkg.import_names[0] ?? pkg.name;
+    // A distribution can ship several import names (pytest: py and pytest);
+    // each one is its own index.
+    const importNames = pkg.import_names.length > 0 ? pkg.import_names : [pkg.name];
     setBusyName(pkg.name);
     setError(null);
     try {
-      await api.indexLibrary(env.id, importName, "python", pkg.status !== "not_indexed");
+      for (const importName of importNames) {
+        await api.indexLibrary(env.id, importName, "python", pkg.status !== "not_indexed");
+      }
       await load(filter);
       onIndexed();
     } catch (e) {
@@ -167,7 +171,11 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
         <div style={{ minWidth: 0 }}>
           <div className="env-title">
             {env.label}
-            {env.is_default && <span className="tag tag-accent">{t(lang, "libraries_default")}</span>}
+            {(env.default_for ?? (env.is_default ? ["python"] : [])).map((l) => (
+              <span className="tag tag-accent" key={l}>
+                {t(lang, "libraries_default")} · {l === "python" ? "Python" : "TypeScript"}
+              </span>
+            ))}
           </div>
           <div className="env-sub mono">
             {env.python_path && `Python ${env.python_version} · ${env.python_path}`}

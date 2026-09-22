@@ -18,6 +18,21 @@ with httpx.Client(timeout=10) as client:
 `,
 };
 
+function supports(env: Environment | undefined, language: string): boolean {
+  if (!env) return false;
+  return language === "python" ? Boolean(env.python_path) : Boolean(env.node_modules_path);
+}
+
+/** The environment a check in `language` uses when none is chosen. */
+function defaultFor(envs: Environment[], language: string): Environment | undefined {
+  return (
+    envs.find((e) => e.default_for?.includes(language)) ??
+    [...envs].reverse().find((e) => supports(e, language)) ??
+    envs.find((e) => e.is_default) ??
+    envs[envs.length - 1]
+  );
+}
+
 export function CheckPage({ lang }: { lang: Lang }) {
   const [language, setLanguage] = useState("python");
   const [code, setCode] = useState(SAMPLES.python);
@@ -33,7 +48,7 @@ export function CheckPage({ lang }: { lang: Lang }) {
       .environments()
       .then((envs) => {
         setEnvironments(envs);
-        const def = envs.find((e) => e.is_default) ?? envs[envs.length - 1];
+        const def = defaultFor(envs, "python");
         if (def) setEnvId(def.id);
       })
       .catch(() => {});
@@ -65,6 +80,8 @@ export function CheckPage({ lang }: { lang: Lang }) {
   const warnings = (result?.findings.length ?? 0) - errors;
   const codeLines = checkedCode.split("\n");
   const stale = result !== null && checkedCode !== code;
+  const selectedEnv = environments.find((e) => e.id === envId);
+  const envMismatch = selectedEnv !== undefined && !supports(selectedEnv, language);
 
   return (
     <div className="page stack-gap">
@@ -77,7 +94,8 @@ export function CheckPage({ lang }: { lang: Lang }) {
                 <option key={e.id} value={e.id}>
                   {e.label}
                   {e.python_version ? ` · Python ${e.python_version}` : ""}
-                  {e.is_default ? ` (${t(lang, "check_env_default")})` : ""}
+                  {e.node_modules_path ? " · node_modules" : ""}
+                  {e.default_for?.includes(language) ? ` (${t(lang, "check_env_default")})` : ""}
                 </option>
               ))}
             </select>
@@ -92,6 +110,11 @@ export function CheckPage({ lang }: { lang: Lang }) {
                 if (code === SAMPLES[language]) setCode(SAMPLES[next]);
                 setLanguage(next);
                 setResult(null);
+                // A frontend-only environment cannot check Python (and vice versa).
+                if (!supports(selectedEnv, next)) {
+                  const def = defaultFor(environments, next);
+                  if (def) setEnvId(def.id);
+                }
               }}
             >
               <option value="python">Python</option>
@@ -104,6 +127,11 @@ export function CheckPage({ lang }: { lang: Lang }) {
             {busy ? <Loader2 size={14} className="spin" /> : <ShieldCheck size={14} />} {t(lang, "check_button")}
           </button>
         </div>
+        {envMismatch && (
+          <div className="finding warning" style={{ marginBottom: 10 }}>
+            {t(lang, language === "python" ? "check_env_no_python" : "check_env_no_node")}
+          </div>
+        )}
         <CodeEditor
           value={code}
           onChange={setCode}

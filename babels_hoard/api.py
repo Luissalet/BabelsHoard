@@ -264,12 +264,22 @@ def create_app(
         conn = C()
         try:
             result = fn(conn)
+            env_id = result.get("env") if isinstance(result, dict) else None
+            if isinstance(env_id, str):
+                # which environment answered: what you want to know when a
+                # call omitted env (the Activity screen shows this line)
+                env_row = environments.get_environment(conn, env_id)
+                args_summary = f"{args_summary} · {env_row['label'] if env_row else env_id}"
             log_call(name, args_summary, True, None, (time.monotonic() - start) * 1000)
             return result
         except AgentError as exc:
             conn.rollback()
             log_call(name, args_summary, False, exc.message, (time.monotonic() - start) * 1000)
             raise
+        except environments.NoPython as exc:
+            conn.rollback()
+            log_call(name, args_summary, False, str(exc), (time.monotonic() - start) * 1000)
+            raise AgentError("no_python", str(exc), status=400) from exc
         except environments.ProbeError as exc:
             conn.rollback()
             log_call(name, args_summary, False, str(exc), (time.monotonic() - start) * 1000)
@@ -359,7 +369,9 @@ def create_app(
         def run(conn):
             if args.language not in ("python", "typescript"):
                 raise AgentError("unsupported_language", "language must be 'python' or 'typescript'")
-            env_row = environments.resolve_env(conn, args.env)
+            env_row = environments.resolve_env(conn, args.env, args.language)
+            if args.language == "python":
+                environments.require_python(conn, env_row)
             return checker.api_check_code(conn, args.code, env_row=env_row, language=args.language)
 
         return call_tool("api_check_code", f"{len(args.code)} chars, {args.language}", run)
@@ -487,10 +499,14 @@ def create_app(
     @app.get("/api/environments")
     def ui_environments():
         conn = C()
-        default_id = environments.resolve_env(conn, None)["id"]
+        defaults = environments.default_ids(conn)
         rows = environments.list_environments(conn)
         for row in rows:
-            row["is_default"] = row["id"] == default_id
+            row["is_default"] = row["id"] == defaults["python"]
+            row["default_for"] = [
+                lang for lang, env_id in defaults.items()
+                if env_id == row["id"] and row.get("python_path" if lang == "python" else "node_modules_path")
+            ]
         return rows
 
     @app.get("/api/environments/{env_id}/packages")
@@ -563,7 +579,11 @@ def create_app(
             raise AgentError("unsupported_language", "language must be 'python' or 'typescript'")
         conn = C()
         try:
-            env_row = environments.resolve_env(conn, args.env)
+            env_row = environments.resolve_env(conn, args.env, args.language)
+            if args.language == "python":
+                environments.require_python(conn, env_row)
+        except environments.NoPython as exc:
+            raise AgentError("no_python", str(exc), status=400) from exc
         except environments.ProbeError as exc:
             raise AgentError("unknown_environment", str(exc), status=404) from exc
         return checker.api_check_code(conn, args.code, env_row=env_row, language=args.language)

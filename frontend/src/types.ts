@@ -8,6 +8,8 @@ export interface Environment {
   node_version: string | null;
   is_builtin: number;
   is_default?: boolean;
+  /** Languages ("python", "typescript") this environment answers when no env is chosen. */
+  default_for?: string[];
   created_at: string;
 }
 

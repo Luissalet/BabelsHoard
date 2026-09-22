@@ -30,6 +30,8 @@ when it cannot be sure:
 ``nx``     the namespace was not expanded (depth/size cap, external module,
            unresolvable alias, compiled module).
 ``trunc``  the namespace's member list was cut by the size cap.
+``compiled`` a compiled extension module without stubs (nothing readable).
+``ns``     a namespace sub-package (folder without ``__init__.py``).
 ``see``    qualname of the home entry that holds this object's members.
 ``mt``     method type: ``i`` instance, ``c`` classmethod, ``s`` staticmethod.
 ``sig0``   the signature is not reliable for argument checks (a decorator
@@ -164,6 +166,18 @@ def distribution_by_name(probe: dict[str, Any], dist_name: str) -> dict[str, Any
         if normalize_dist_name(dist["name"]) == want:
             return dist
     return None
+
+
+def python_library_id(probe: dict[str, Any] | None, dist_name: str, version: str, source: str, import_name: str) -> str:
+    """One library row per (distribution, version, import name) when a
+    distribution ships several top-level packages (pytest: ``py`` and
+    ``pytest``; setuptools: ``pkg_resources`` and ``setuptools``), so each
+    import name gets its own index. Single-package distributions keep the
+    plain id."""
+    dist = distribution_by_name(probe, dist_name) if probe else None
+    if dist is not None and len(import_names_for(probe, dist)) > 1:
+        return library_id("python", dist_name, version, f"{source}#{import_name.split('.')[0]}")
+    return library_id("python", dist_name, version, source)
 
 
 def import_names_for(probe: dict[str, Any], dist: dict[str, Any]) -> list[str]:
@@ -860,6 +874,46 @@ def _extra_instance_attributes(cls: Any) -> list[str]:
     return sorted(names)
 
 
+_EXT_RE = re.compile(r"^([A-Za-z]\w*)(?:\.[\w-]+)?\.(?:so|pyd)$")
+
+
+def _unlisted_submodules(mod: Any) -> list[tuple[str, str, Path]]:
+    """Submodules of a package that griffe does not list as members:
+    compiled extensions without stubs (``lxml/etree.cpython-311-...so``) and
+    namespace sub-packages (a folder of modules without ``__init__.py``,
+    like ``chromadb/api/models``). Both are importable, so they must exist
+    in the index - as unverifiable modules - or the checker would call
+    ``from lxml import etree`` an error. Returns (name, "compiled"|"ns", path)."""
+    filepath = getattr(mod, "filepath", None)
+    if isinstance(filepath, list):
+        filepath = filepath[0] if filepath else None
+    if filepath is None or Path(filepath).stem != "__init__":
+        return []
+    folder = Path(filepath).parent
+    out: list[tuple[str, str, Path]] = []
+    try:
+        children = sorted(folder.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if child.is_file():
+            m = _EXT_RE.match(child.name)
+            if m and m.group(1).isidentifier():
+                out.append((m.group(1), "compiled", child))
+        elif child.is_dir() and child.name.isidentifier() and not child.name.startswith("_"):
+            if child.name in SKIP_SUBMODULE_PARTS:
+                continue
+            if (child / "__init__.py").exists() or (child / "__init__.pyi").exists():
+                continue
+            try:
+                has_code = any(g.suffix in (".py", ".pyi") or _EXT_RE.match(g.name) for g in child.iterdir())
+            except OSError:
+                has_code = False
+            if has_code:
+                out.append((child.name, "ns", child))
+    return out
+
+
 # ------------------------------------------------------------------ walk --
 _ROW_FIELDS = (
     "id", "library_id", "name", "qualname", "kind", "signature", "params_json", "returns",
@@ -1001,11 +1055,34 @@ class _Walker:
     def _members(self, obj: Any) -> list[tuple[str, Any]]:
         members = getattr(obj, "members", None) or {}
         items = list(members.items())
+        names = set(members)
         if _kind_of(obj) == "class":
             inherited = self._inherited(obj)
             for name, member in (inherited or {}).items():
-                if name not in members:
+                if name not in names:
                     items.append((name, member))
+                    names.add(name)
+        # A stub (.pyi) name declared only with @overload has no
+        # implementation, so griffe keeps it in ``overloads`` and not in
+        # ``members`` (numpy's Generator.normal/integers/choice...). Index it
+        # through its last overload, carrying all of them as the contract.
+        owners = [obj]
+        if _kind_of(obj) == "class":
+            try:
+                owners += list(obj.mro())
+            except Exception:  # noqa: BLE001
+                pass
+        for owner in owners:
+            for name, overloads in (getattr(owner, "overloads", None) or {}).items():
+                if not overloads or name in names:
+                    continue
+                func = overloads[-1]
+                try:
+                    func.overloads = list(overloads)
+                except Exception:  # noqa: BLE001
+                    continue
+                items.append((name, func))
+                names.add(name)
         return items
 
     def _is_public(self, name: str, obj: Any, parent: Any) -> bool:
@@ -1129,6 +1206,23 @@ class _Walker:
                     self.homes[resolved.path] = child_q
                     queue.append((resolved, child_q, depth + 1))
         if parent_kind == "module":
+            for name, flag, path in _unlisted_submodules(obj):
+                if name in seen_names or f"{qual}.{name}" in self.rows:
+                    continue
+                if len(self.rows) >= self.cap:
+                    break
+                seen_names.add(name)
+                self._add(
+                    f"{qual}.{name}", name, "module", None, qual, {"nx": 1, flag: 1},
+                    signature=f"module {obj.path}.{name}",
+                    summary=(
+                        "compiled extension module without .pyi stubs; its members cannot be read statically"
+                        if flag == "compiled"
+                        else "namespace sub-package (a folder without __init__.py); its modules are not indexed"
+                    ),
+                    target=f"{obj.path}.{name}",
+                    source_path=str(path),
+                )
             exports = getattr(obj, "exports", None) or []
             try:
                 export_names = [str(e) for e in exports]
@@ -1179,10 +1273,14 @@ class _Walker:
 
 # ------------------------------------------------------------ entry points --
 def _supersede_older(conn, lib_id: str, name: str, source: str) -> None:
+    """Mark *other versions* of the same distribution as superseded. Other
+    import names of the same version (a distribution with several
+    top-level packages) are siblings, not older versions."""
     conn.execute(
         "UPDATE libraries SET status='superseded' WHERE ecosystem='python' AND name=? AND source=? "
-        "AND id != ? AND status IN ('done', 'partial')",
-        (name, source, lib_id),
+        "AND id != ? AND status IN ('done', 'partial') "
+        "AND version != (SELECT version FROM libraries WHERE id=?)",
+        (name, source, lib_id, lib_id),
     )
 
 
@@ -1227,6 +1325,31 @@ def _compiled_module_file(search_paths: list[str], name: str) -> Path | None:
     return None
 
 
+def _load_root(paths: list[str], import_name: str) -> tuple[_BudgetLoader, Any]:
+    """Load ``import_name`` with a fresh budgeted loader.
+
+    griffe merges ``.pyi`` stubs while loading, and the merge resolves
+    aliases: ``attrs/__init__.pyi`` re-exports ``attr.field``, which fails
+    unless ``attr`` is already in the collection. Such a package is loaded
+    first and the load retried (bounded)."""
+    preload: list[str] = []
+    top = import_name.split(".")[0]
+    while True:
+        loader = _BudgetLoader(search_paths=paths, allow_inspection=False, docstring_parser="google", budget=MODULE_BUDGET)
+        for name in preload:
+            loader.ensure_package(name)
+        try:
+            root = loader.load(import_name, submodules=True, find_stubs_package=True)
+            if getattr(root, "is_alias", False):
+                root = root.final_target
+            return loader, root
+        except griffe.AliasResolutionError as exc:
+            needed = (getattr(exc.alias, "target_path", "") or "").split(".", 1)[0]
+            if not needed or needed == top or needed in preload or len(preload) >= 4:
+                raise
+            preload.append(needed)
+
+
 def index_python_library(
     conn,
     *,
@@ -1248,7 +1371,7 @@ def index_python_library(
     version = version or "0.0.0"
     dist_name = dist_name or import_name
 
-    lib_id = library_id("python", dist_name, version, source)
+    lib_id = python_library_id(probe, dist_name, version, source, import_name)
     with INDEX_LOCK:
         existing = conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone()
         if existing and existing["status"] in ("done", "partial") and not force:
@@ -1261,16 +1384,8 @@ def index_python_library(
             return db.dump(conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone())
 
         paths = list(search_paths or probe.get("sys_path") or [])
-        loader = _BudgetLoader(
-            search_paths=paths,
-            allow_inspection=False,
-            docstring_parser="google",
-            budget=MODULE_BUDGET,
-        )
         try:
-            root = loader.load(import_name, submodules=True, find_stubs_package=True)
-            if getattr(root, "is_alias", False):
-                root = root.final_target
+            loader, root = _load_root(paths, import_name)
         except Exception as exc:  # noqa: BLE001 - report honestly, don't crash the job
             compiled = _compiled_module_file(paths, import_name)
             if compiled is None and import_name in set(probe.get("builtin_modules") or []):
@@ -1404,7 +1519,7 @@ def current_library(conn, env_row: dict[str, Any], top: str) -> dict[str, Any] |
         return None
     dist = find_distribution(probe, top)
     if dist is not None:
-        lib_id = library_id("python", dist["name"], dist["version"], f"env:{env_row['id']}")
+        lib_id = python_library_id(probe, dist["name"], dist["version"], f"env:{env_row['id']}", top)
     else:
         lib_id = library_id("python", f"stdlib/{top}", probe.get("python_version", "0"), f"stdlib:{env_row['id']}")
     row = conn.execute("SELECT * FROM libraries WHERE id=?", (lib_id,)).fetchone()
