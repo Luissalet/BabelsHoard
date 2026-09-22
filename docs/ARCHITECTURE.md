@@ -7,6 +7,9 @@ babels_hoard/
   __main__.py        python -m babels_hoard: port check, demo seeding, uvicorn on 127.0.0.1
   api.py             FastAPI app: browser guard, /api/agent/* (audited), UI endpoints, SPA hosting
   mcp_server.py      standalone stdio MCP adapter (stdlib + httpx + mcp only)
+  backend.py         the shared model backend: config.json read/write (token never leaves the
+                      process), the app's one Link, and "Ask the docs" (search + llm + embeddings)
+  hoard_link/        vendored copy of Hoard Link (do not edit; see VENDORED.txt)
   db.py              schema (WAL, FTS5, trigram), in-place migrations, one connection per thread
   jobs.py            background job queue: one worker thread, progress in the jobs table
   environments.py    detect/register environments, run and cache the interpreter probe
@@ -169,6 +172,37 @@ Validation and routing errors use the same `{error, message}` shape as tool
 errors. `/api/agent/*` calls are timed and written to `agent_calls`; the UI
 uses separate endpoints (`/api/lookup`, `/api/check`, ...) so the audit log
 only shows the assistant.
+
+## Shared model backend (`backend.py`)
+
+One [Hoard Link](../babels_hoard/hoard_link) `Link` per app, built from
+`data/backend.json` + environment overrides by `backend.build_link` and
+stored on `app.state.link`; `app.state.link_factory` is how it gets
+rebuilt (a config change or `/api/backend/recheck` calls it and closes the
+old `Link`, so probe caches and explicit overrides never mix between the
+old and new config - tests inject a fixed/fake factory to stay offline, and
+`create_app`'s default factory builds a real `Link` lazily so every other
+test that never touches `/api/backend*` is unaffected). `GET /api/backend`
+reports only the two capabilities this app uses (`llm`, `embeddings`);
+`GET`/`PUT /api/backend/config` read and merge-write `backend.json`,
+replacing the Faustus token with a bare `token_set` boolean on the way out
+so it is never sent back to the browser.
+
+"Ask the docs" (`backend.ask_the_docs`) is a plain function over a
+`sqlite3.Connection`, a `Link` and `search.search` (no FastAPI import): it
+resolves `llm` first and returns an honest `{available: false, reason}`
+without ever calling the model when nothing resolves; otherwise it takes
+the top 50 FTS hits, and when `embeddings` also resolves, embeds the
+question and each hit's compact text and re-sorts by cosine similarity
+(hybrid search) - a failure here is swallowed and the endpoint falls back
+to lexical order rather than failing the whole answer. The top six entries
+become the model's only context; the answer is asked to cite their ids in
+`[brackets]`, and the response's `cited` list is filtered down to ids that
+actually are one of those six (a model inventing a citation does not
+produce a broken link in the UI). A `BackendError`/`Unavailable` raised by
+the `chat()` call itself (resolved a moment ago, then the server went
+away) is caught and turned into a soft `answered: false` result with the
+entries still attached, never a 500.
 
 ## Jobs
 

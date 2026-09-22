@@ -56,6 +56,16 @@ def main() -> None:
         time.sleep(0.4)
         shoot(page, "search.png")
 
+        # "Ask the docs": only produces a real answer when a model is
+        # connected (Settings -> Models); harmless (button stays disabled
+        # with a reason) when nothing is configured.
+        ask_button = page.locator("button", has_text="Ask the docs")
+        if ask_button.count() and ask_button.first.is_enabled():
+            ask_button.first.click()
+            page.wait_for_selector(".ask-answer", timeout=15000)
+            time.sleep(0.4)
+            shoot(page, "ask.png")
+
         page.locator(".result-item", has_text="httpx.Client.get").first.click()
         page.wait_for_selector(".detail-panel .params-table")
         time.sleep(0.4)
@@ -68,6 +78,11 @@ def main() -> None:
         page.wait_for_selector(".check-result .finding")
         time.sleep(0.4)
         shoot(page, "check-code.png")
+
+        page.goto(f"{base_url}/#/settings", wait_until="networkidle")
+        page.wait_for_selector(".models-row")
+        time.sleep(0.4)
+        shoot(page, "models.png")
 
         page.goto(f"{base_url}/#/libraries", wait_until="networkidle")
         page.click(".disclosure")
