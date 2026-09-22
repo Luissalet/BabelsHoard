@@ -230,8 +230,8 @@ respondió).
 cd frontend; npm run build
 ```
 
-En Linux/macOS, lo mismo con `.venv/bin/python`. **159 tests, entre 1 y 2
-minutos en una máquina Linux compartida de 2 CPU**, sin red, sin GPU y sin
+En Linux/macOS, lo mismo con `.venv/bin/python`. **159 tests, alrededor de
+un minuto en una máquina Linux compartida de 2 CPU**, sin red, sin GPU y sin
 descargar modelos. Cubren: la
 protección frente al navegador y el confinamiento de archivos estáticos
 (intentos de salir de la carpeta), la forma de los errores, las conexiones

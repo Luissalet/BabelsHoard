@@ -216,8 +216,8 @@ argument summary, duration, result, and which environment answered).
 cd frontend; npm run build
 ```
 
-On Linux/macOS the same with `.venv/bin/python`. **159 tests, about 1-2
-minutes on a shared 2-CPU Linux machine**, with no network, no GPU and no
+On Linux/macOS the same with `.venv/bin/python`. **159 tests, about a
+minute on a shared 2-CPU Linux machine**, with no network, no GPU and no
 model downloads. They cover: the
 browser guard and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
