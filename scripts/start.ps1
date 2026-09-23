@@ -78,7 +78,8 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
 # Install the lock only when it changed since the last successful install.
 $Lock = Join-Path $Root "requirements-lock.txt"
 $Stamp = Join-Path (Join-Path $Root ".venv") "babel-lock.sha256"
-$LockHash = (Get-FileHash -LiteralPath $Lock -Algorithm SHA256).Hash
+# SHA-256 through .NET: Get-FileHash is missing when Windows PowerShell is started from PowerShell 7.
+$LockHash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.IO.File]::ReadAllBytes($Lock))).Replace('-', '')
 $Installed = ""
 if (Test-Path -LiteralPath $Stamp) { $Installed = (Get-Content -LiteralPath $Stamp -Raw).Trim() }
 if ($Installed -ne $LockHash) {

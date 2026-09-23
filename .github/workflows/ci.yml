@@ -73,7 +73,7 @@ jobs:
         with:
           node-version: "22"
       - name: Start with scripts/start.ps1
-        shell: pwsh
+        shell: powershell
         run: |
           $launcher = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/start.ps1','-NoBrowser' -PassThru -RedirectStandardOutput launcher.out -RedirectStandardError launcher.err
           $ok = $false
@@ -89,7 +89,7 @@ jobs:
           }
           if (-not (Test-Path faustus-plugin.json)) { throw 'manifest missing' }
       - name: Stop with scripts/stop.ps1
-        shell: pwsh
+        shell: powershell
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop.ps1
           Start-Sleep -Seconds 3
