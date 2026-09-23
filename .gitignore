@@ -12,3 +12,5 @@ test-results/
 babels_hoard/probes/node_modules/
 .DS_Store
 *.tsbuildinfo
+launcher.out
+launcher.err

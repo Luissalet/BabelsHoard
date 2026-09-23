@@ -75,13 +75,18 @@ jobs:
       - name: Start with scripts/start.ps1
         shell: pwsh
         run: |
-          Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/start.ps1','-NoBrowser' | Out-Null
+          $launcher = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/start.ps1','-NoBrowser' -PassThru -RedirectStandardOutput launcher.out -RedirectStandardError launcher.err
           $ok = $false
           for ($i = 0; $i -lt 300; $i++) {
             try { $h = Invoke-RestMethod http://127.0.0.1:8811/api/health -TimeoutSec 2; if ($h.service -eq 'babels-hoard') { $ok = $true; break } } catch { }
+            if ($launcher.HasExited -and -not $ok) { break }
             Start-Sleep -Seconds 2
           }
-          if (-not $ok) { throw 'Babel''s Hoard did not become healthy' }
+          if (-not $ok) {
+            Write-Host '--- launcher output'; Get-Content launcher.out -ErrorAction SilentlyContinue
+            Write-Host '--- launcher errors'; Get-Content launcher.err -ErrorAction SilentlyContinue
+            throw 'Babel''s Hoard did not become healthy'
+          }
           if (-not (Test-Path faustus-plugin.json)) { throw 'manifest missing' }
       - name: Stop with scripts/stop.ps1
         shell: pwsh
