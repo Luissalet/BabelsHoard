@@ -20,6 +20,8 @@ from starlette.staticfiles import StaticFiles
 
 from . import __version__, backend, checker, db, deps, docsets, environments, indexing, jobs, markdown_index, node_indexing, search
 from .hoard_link import Link
+from .hoard_link import family
+
 
 SERVICE = "babels-hoard"
 DISPLAY_NAME = "Babel's Hoard"
@@ -338,7 +340,8 @@ def create_app(
             "name": DISPLAY_NAME,
             "version": __version__,
             "status": "ok",
-            "libraries": n_libs,
+            "libraries": n_libs,            "hoard_link": family.health_block(),
+
             "entries": n_entries,
             "environments": n_envs,
             "jobs_running": running,
@@ -682,5 +685,13 @@ def create_app(
         @app.get("/")
         def no_ui():
             return HTMLResponse(_no_index_page("The frontend has not been built yet."))
+
+    # The family contract (Hoard Link 0.4): the shared GET /api/agent/tools +
+    # POST /api/agent/call over the per-tool routes above (which stay as they
+    # are), a bearer token in data/mcp-token, and one agent.call event per
+    # call on the hub's bus. Descriptions come from mcp_server.py's docstrings
+    # so the two catalogues never disagree.
+    family.install_fastapi(app, "babel", str(data_dir),
+                           mcp_source=str(Path(__file__).with_name("mcp_server.py")))
 
     return app
