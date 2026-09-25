@@ -23,7 +23,6 @@ export function Sidebar({ view, onChange, lang }: { view: View; onChange: (v: Vi
         </div>
         <div className="sidebar-brand-text">
           <div className="sidebar-brand-name">{t(lang, "appName")}</div>
-          <div className="sidebar-brand-tagline">{t(lang, "tagline")}</div>
         </div>
       </div>
       <div className="nav">
