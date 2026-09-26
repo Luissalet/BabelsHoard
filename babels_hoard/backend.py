@@ -272,6 +272,7 @@ async def ask_the_docs(
             max_tokens=500,
             temperature=0.2,
             capability="llm",
+            effort="high",
         )
     except (Unavailable, BackendError) as exc:
         # Resolved a moment ago but the call itself failed (server went
