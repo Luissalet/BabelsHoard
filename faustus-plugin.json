@@ -3,7 +3,7 @@
   "id": "babel",
   "name": "Babel's Hoard",
   "purpose": "Gives the model the exact, version-installed API signatures and docs for this project instead of its training-data guesses, and can check code it wrote for hallucinated APIs.",
-  "capabilities": ["api-lookup", "code-check", "docs-search", "docsets", "environments"],
+  "capabilities": ["api-lookup", "code-check", "docs-search", "docsets", "environments", "localization-audit"],
   "placeholders": ["BABEL_DIR", "APP_URL"],
   "defaults": { "APP_URL": "http://127.0.0.1:8811" },
   "app": {

@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, backend, checker, db, deps, docsets, environments, indexing, jobs, markdown_index, node_indexing, search
+from . import __version__, backend, checker, db, deps, docsets, environments, indexing, jobs, locales, markdown_index, node_indexing, search
 from .hoard_link import Link
 from .hoard_link import family
 
@@ -181,6 +181,13 @@ class DocsInstallDocsetArgs(BaseModel):
 class DocsIndexFolderArgs(BaseModel):
     path: str
     name: str | None = None
+
+
+class DocsCheckLocalesArgs(BaseModel):
+    path: str
+    source_locale: str = "en"
+    offset: int = 0
+    limit: int = 50
 
 
 class IndexLibraryArgs(BaseModel):
@@ -466,6 +473,16 @@ def create_app(
                 raise AgentError("bad_path", str(exc)) from exc
 
         return call_tool("docs_index_folder", args.path, run)
+
+    @app.post("/api/agent/docs_check_locales")
+    def agent_docs_check_locales(args: DocsCheckLocalesArgs):
+        def run(_conn):
+            try:
+                return locales.check_locales(args.path, args.source_locale, args.offset, args.limit)
+            except (OSError, ValueError) as exc:
+                raise AgentError("bad_catalog", str(exc)) from exc
+
+        return call_tool("docs_check_locales", args.path, run)
 
     # ------------------------------------------------------- shared backend
     # UI-only: Faustus/the shared model backend is a Settings concern, not

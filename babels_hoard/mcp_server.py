@@ -287,5 +287,29 @@ def docs_index_folder(path: str, name: str | None = None) -> dict:
     return _post("docs_index_folder", {"path": path, "name": name})
 
 
+@mcp.tool(annotations=_READ)
+def docs_check_locales(path: str, source_locale: str = "en", offset: int = 0, limit: int = 50) -> dict:
+    """Check JSON locale keys and placeholders (comprobar traducciones, translation audit)
+
+    Reads `<locale>.json` files in one directory. Nested objects become dotted keys.
+    Compares each target locale against source_locale; complex ICU-style messages
+    are counted as unchecked rather than claimed valid. Never edits a catalogue.
+
+    Args:
+        path: absolute path to the directory containing en.json, es.json, etc.
+        source_locale: source file stem, default en.
+        offset: finding offset for the next page.
+        limit: findings per page, at most 100.
+
+    Returns: {source_locale, locales, source_keys, total, unchecked_messages,
+        findings: [{locale, key, kind, expected?, actual?}], truncated,
+        has_more, next_offset}.
+    Keywords: translation audit, localization keys, placeholder mismatch, i18n,
+        comprobar traducciones, claves faltantes, variables de traducción, idiomas
+    """
+    return _post("docs_check_locales", {"path": path, "source_locale": source_locale,
+                                        "offset": offset, "limit": limit})
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

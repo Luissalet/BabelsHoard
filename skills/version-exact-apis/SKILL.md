@@ -16,6 +16,8 @@ Your memory of a library mixes versions. The project's `.venv` /
 - You know what you need but not its name -> `docs_search`, then `api_lookup`.
 - New project in this conversation -> `docs_add_environment(path)` once, and
   pass `env` (the returned id or the folder path) to the other tools.
+- Editing JSON translation catalogues -> `docs_check_locales(path)` first to
+  find missing keys and simple placeholder mismatches across locales.
 
 ## Order
 

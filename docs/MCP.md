@@ -247,6 +247,22 @@ file cap is reached).
  "hint": "Search it with docs_search(query, library=<name>); read a section with docs_read(id)."}
 ```
 
+## `docs_check_locales(path, source_locale="en", offset=0, limit=50)`
+
+Read-only audit of `<locale>.json` files in one directory. Nested object keys
+are compared against the source catalogue; findings include missing keys,
+extra keys and mismatched simple placeholders such as `{name}`. Complex ICU
+messages are counted in `unchecked_messages`, not claimed valid. Supports up
+to 40 locale files of 2 MB each and pages at most 100 findings.
+
+```json
+{"source_locale": "en", "locales": ["es"], "source_keys": 2,
+ "total": 1, "unchecked_messages": 0,
+ "findings": [{"locale": "es", "key": "home.title", "kind": "placeholder_mismatch",
+   "expected": ["name"], "actual": ["usuario"]}],
+ "truncated": false, "has_more": false, "next_offset": null}
+```
+
 ## Configuration for other MCP clients
 
 ```json

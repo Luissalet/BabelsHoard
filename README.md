@@ -66,6 +66,7 @@ React project with 228 installed packages
 | Search | SQLite FTS5 with bm25 weights (name, qualname, signature, summary, doc), identifier-aware tokens, filters, one hit per definition under its shortest path, re-ranked so callables and classes whose name matches come before attributes and constants, trigram "did you mean"; a dotted name offers an exact lookup that indexes the package on the spot | Lexical, no embeddings; only what is indexed |
 | Offline docsets | DevDocs catalogue and install (HTML converted to Markdown, split by anchors) as a background job | Needs the network, only when the user or the model asks; converter is small, not a full HTML renderer |
 | Markdown folders | `.md`/`.mdx`/`.rst`/`.txt` split by heading (fenced code aware, rst underlines) | Dependency/VCS/build folders skipped; 2,000 files, 2 MB per file |
+| Translation audit | Read-only MCP check of missing/extra JSON catalogue keys and simple `{name}` placeholder mismatches across locales | One directory of `<locale>.json` files; complex ICU messages counted as unchecked |
 | Assistant audit | Every `/api/agent/*` call (tool, argument summary, duration, result) in "Assistant activity"; the UI uses its own endpoints so only the model's calls appear | Local only |
 | Ask the docs | Search screen: a question is answered from the top search hits by the shared `llm` model, with citations `[id]` that link back to the exact entry (and a Sources list; an id the model invented is shown struck through). When the shared `embeddings` model resolves, the top 50 lexical hits are re-ranked hybrid (reciprocal-rank fusion of the lexical and embedding orders, "semantic re-rank on" badge); otherwise lexical order | Answers only from what is already indexed; a UI feature, not an MCP tool; disabled with the reason shown when no model resolves |
 | Shared model backend | Settings -> Models: which server/model is used for `llm`/`embeddings` right now and why, a Re-check button, manual overrides (Faustus URL/token, per-capability URL/model) | Read [Shared models](#shared-models-hoardlink) below |
@@ -138,6 +139,7 @@ to the app over loopback.
 | `docs_catalog` | Downloadable offline docsets (network) | yes |
 | `docs_install_docset` | Download and index a docset as a background job (network) | no |
 | `docs_index_folder` | Index a folder of markdown docs | no |
+| `docs_check_locales` | Compare JSON translation keys and simple `{name}` placeholders | yes |
 
 Every tool description ends with English and Spanish keywords for tool
 retrieval. Argument and result shapes, limits and examples:

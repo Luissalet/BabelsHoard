@@ -65,7 +65,7 @@ def live_app(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mcp_stdio_list_and_call_tools(live_app):
+async def test_mcp_stdio_list_and_call_tools(live_app, tmp_path):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -88,7 +88,20 @@ async def test_mcp_stdio_list_and_call_tools(live_app):
                 "docs_catalog",
                 "docs_install_docset",
                 "docs_index_folder",
+                "docs_check_locales",
             }
+
+            catalog = tmp_path / "locales"
+            catalog.mkdir()
+            (catalog / "en.json").write_text('{"hello":"Hi {name}"}', encoding="utf-8")
+            (catalog / "es.json").write_text('{"hello":"Hola {usuario}"}', encoding="utf-8")
+            checked = await session.call_tool("docs_check_locales", {"path": str(catalog)})
+            checked_body = json.loads(checked.content[0].text)
+            assert checked_body["total"] == 1
+            assert checked_body["findings"][0]["expected"] == ["name"]
+            invalid = await session.call_tool("docs_check_locales", {"path": str(catalog / "absent")})
+            assert invalid.isError is True
+            assert "bad_catalog" in invalid.content[0].text
 
             reg = await session.call_tool("docs_add_environment", {"path": sys.executable, "index_dependencies": False})
             reg_body = json.loads(reg.content[0].text)

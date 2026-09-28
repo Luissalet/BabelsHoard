@@ -70,6 +70,7 @@ FastAPI + React con 228 paquetes instalados
 | Búsqueda | FTS5 de SQLite con pesos bm25 (nombre, ruta, firma, resumen, documentación), tokens que entienden identificadores, filtros, un resultado por definición con su ruta más corta, reordenada para que las funciones y clases cuyo nombre coincide vayan antes que atributos y constantes, y sugerencias por trigramas; un nombre con puntos ofrece una consulta exacta que indexa el paquete en el momento | Léxica, sin embeddings; solo lo indexado |
 | Documentación sin conexión | Catálogo e instalación de DevDocs (HTML convertido a Markdown y dividido por anclas) como tarea en segundo plano | Necesita red, solo cuando lo pide el usuario o el modelo; el conversor es pequeño, no un renderizador HTML completo |
 | Carpetas de Markdown | `.md`/`.mdx`/`.rst`/`.txt` divididos por encabezado (respetando bloques de código y subrayados de rst) | Se omiten carpetas de dependencias, control de versiones y compilación; 2.000 archivos y 2 MB por archivo |
+| Auditoría de traducciones | Herramienta MCP de solo lectura para claves JSON ausentes/sobrantes y variables simples `{name}` distintas entre idiomas | Un directorio con archivos `<idioma>.json`; mensajes ICU complejos quedan sin verificar |
 | Auditoría del asistente | Cada llamada a `/api/agent/*` (herramienta, resumen de argumentos, duración, resultado) en «Actividad del asistente»; la interfaz usa sus propios endpoints, así que solo aparecen las llamadas del modelo | Solo local |
 | Preguntar a la documentación | Pantalla de Búsqueda: una pregunta se responde a partir de los mejores resultados de búsqueda con el modelo de `llm` compartido, con citas `[id]` que enlazan a la entrada exacta (y una lista de Fuentes; un id inventado por el modelo aparece tachado). Cuando el modelo de `embeddings` compartido resuelve, los 50 mejores resultados léxicos se reordenan de forma híbrida (fusión por rango recíproco del orden léxico y el de embeddings, distintivo «reordenación semántica activa»); si no, orden léxico | Solo responde con lo ya indexado; es una función de la interfaz, no una herramienta MCP; se desactiva mostrando el motivo cuando ningún modelo resuelve |
 | Backend de modelos compartido | Ajustes → Modelos: qué servidor/modelo se usa ahora mismo para `llm`/`embeddings` y por qué, un botón «Comprobar de nuevo», ajustes manuales (URL/token de Faustus, URL/modelo por capacidad) | Ver [Modelos compartidos](#modelos-compartidos-hoardlink) más abajo |
@@ -144,6 +145,7 @@ habla con la aplicación por la interfaz local.
 | `docs_catalog` | Docsets descargables (red) | sí |
 | `docs_install_docset` | Descargar e indexar un docset en segundo plano (red) | no |
 | `docs_index_folder` | Indexar una carpeta de documentación markdown | no |
+| `docs_check_locales` | Comparar claves y variables simples `{name}` de catálogos JSON | sí |
 
 Cada descripción termina con palabras clave en inglés y en español para que
 Faustus encuentre la herramienta. Formas de argumentos y resultados, límites
