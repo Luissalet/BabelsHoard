@@ -1,7 +1,41 @@
 @import "@fontsource-variable/ibm-plex-sans";
 @import "@fontsource/ibm-plex-mono";
 
+/* Dark by default, driven by the shared Hoard tokens (hoard-theme.css);
+   the original light palette stays available through data-theme="light". */
 :root {
+  --accent: var(--hoard-accent);
+  --accent-strong: var(--hoard-accent-strong);
+  --accent-soft: var(--hoard-accent-soft);
+  --bg: var(--hoard-deep);
+  --bg-elevated: var(--hoard-surface);
+  --bg-sidebar: var(--hoard-surface);
+  --bg-sidebar-hover: var(--hoard-elevated);
+  --text: var(--hoard-text);
+  --text-dim: var(--hoard-text-muted);
+  --text-on-accent: var(--hoard-accent-ink);
+  --border: var(--hoard-border);
+  --border-strong: var(--hoard-border-hover);
+  --danger: #f16f83;
+  --danger-bg: rgba(241, 111, 131, 0.14);
+  --warning: var(--hoard-warning);
+  --warning-bg: rgba(212, 168, 67, 0.14);
+  --success: #6bd39a;
+  --success-bg: rgba(107, 211, 154, 0.12);
+  --radius: var(--hoard-radius-lg);
+  --shadow: var(--hoard-shadow);
+  --syn-name: var(--hoard-accent-strong);
+  --syn-param: var(--hoard-text);
+  --syn-type: #8cb8ff;
+  --syn-default: #f0b464;
+  --syn-const: #f08cb5;
+  --syn-punct: var(--hoard-text-dim);
+  --code-bg: var(--hoard-sunken);
+  --font-sans: "IBM Plex Sans Variable", var(--hoard-font-sans);
+  --font-mono: "IBM Plex Mono", var(--hoard-font-mono);
+}
+
+:root[data-theme="light"] {
   --accent: #b04ad8;
   --accent-strong: #9333c0;
   --accent-soft: #b04ad81a;
@@ -33,57 +67,8 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-:root[data-theme="dark"] {
-  --bg: #14101a;
-  --bg-elevated: #1d1723;
-  --bg-sidebar: #0e0b13;
-  --bg-sidebar-hover: #201828;
-  --text: #ece6f2;
-  --text-dim: #a89bb3;
-  --border: #2c2333;
-  --border-strong: #3c3145;
-  --danger: #f16f83;
-  --danger-bg: #3a1620;
-  --warning: #e0ac3f;
-  --warning-bg: #362a12;
-  --success: #6bd39a;
-  --success-bg: #0f2c1d;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-  --syn-name: #d58cf5;
-  --syn-param: #ece6f2;
-  --syn-type: #8cb8ff;
-  --syn-default: #f0b464;
-  --syn-const: #f08cb5;
-  --syn-punct: #8f8399;
-  --code-bg: #19131f;
-}
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #14101a;
-    --bg-elevated: #1d1723;
-    --bg-sidebar: #0e0b13;
-    --bg-sidebar-hover: #201828;
-    --text: #ece6f2;
-    --text-dim: #a89bb3;
-    --border: #2c2333;
-    --border-strong: #3c3145;
-    --danger: #f16f83;
-    --danger-bg: #3a1620;
-    --warning: #e0ac3f;
-    --warning-bg: #362a12;
-    --success: #6bd39a;
-    --success-bg: #0f2c1d;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-    --syn-name: #d58cf5;
-    --syn-param: #ece6f2;
-    --syn-type: #8cb8ff;
-    --syn-default: #f0b464;
-    --syn-const: #f08cb5;
-    --syn-punct: #8f8399;
-    --code-bg: #19131f;
-  }
-}
+:root[data-theme="light"] .sidebar { color: #e9e2ef; }
 
 * {
   box-sizing: border-box;
@@ -1312,3 +1297,86 @@ table.params-table {
   max-width: min(560px, 48vw);
   text-overflow: ellipsis;
 }
+
+/* ---- Hoard family chrome (matches the shared look) ---- */
+.sidebar {
+  width: var(--hoard-sidebar-w);
+  padding: 0 12px 12px;
+  background: var(--hoard-surface);
+  border-right: 1px solid var(--hoard-border);
+  color: var(--hoard-text);
+}
+.sidebar-brand {
+  height: var(--hoard-header-h);
+  margin: 0 -12px 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hoard-border);
+  color: var(--hoard-accent);
+}
+.sidebar-brand-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: transparent;
+  overflow: hidden;
+}
+.sidebar-brand-icon img { width: 32px; height: 32px; object-fit: cover; }
+.sidebar-brand-name {
+  font-family: var(--hoard-font-serif);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--hoard-accent);
+}
+.sidebar-brand-tagline { color: var(--hoard-text-dim); }
+.nav-item {
+  height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+  color: var(--hoard-text-muted);
+}
+.nav-item:hover { background: var(--hoard-elevated); color: var(--hoard-text); }
+.nav-item.active { background: var(--hoard-elevated); color: var(--hoard-text); }
+.sidebar-footer { color: var(--hoard-text-dim); }
+.header {
+  height: var(--hoard-header-h);
+  padding: 0 28px;
+  background: var(--hoard-deep);
+  border-bottom: 1px solid var(--hoard-border);
+}
+.header-title { font-size: 15px; font-weight: 600; color: var(--hoard-text); }
+.card, .result-item { border-radius: var(--hoard-radius-lg); }
+.card:hover, .result-item:hover { border-color: var(--hoard-border-hover); }
+.btn { border-radius: var(--hoard-radius); min-height: 36px; }
+.btn:hover { background: var(--hoard-elevated); border-color: var(--hoard-border-hover); }
+.btn-primary { background: var(--hoard-accent); border-color: var(--hoard-accent); color: var(--hoard-accent-ink); font-weight: 600; }
+.btn-primary:hover { background: var(--hoard-accent-strong); border-color: var(--hoard-accent-strong); }
+.btn-ghost:hover { background: var(--hoard-elevated); border-color: transparent; }
+.input, .select, textarea.textarea { background: var(--hoard-surface); border-color: var(--hoard-border); border-radius: var(--hoard-radius); }
+.input::placeholder, textarea.textarea::placeholder, .search-bar input::placeholder { color: var(--hoard-text-dim); }
+.input:focus, .select:focus, textarea.textarea:focus { outline: none; border-color: var(--hoard-accent); }
+.search-bar { border-color: var(--hoard-border); border-radius: var(--hoard-radius); box-shadow: none; }
+.search-bar:focus-within { border-color: var(--hoard-accent); }
+.badge { border-radius: var(--hoard-radius-sm); }
+.badge-neutral, .badge-pending { background: var(--hoard-elevated); }
+table.table th { color: var(--hoard-text-dim); font-size: 12px; }
+.detail-backdrop { background: rgba(0, 0, 0, 0.5); }
+.detail-panel { box-shadow: var(--hoard-shadow); }
+
+/* Light option keeps the original dark sidebar and light surfaces. */
+:root[data-theme="light"] .sidebar { background: var(--bg-sidebar); border-right-color: transparent; }
+:root[data-theme="light"] .sidebar-brand { border-bottom-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="light"] .nav-item { color: #d6cbe0; }
+:root[data-theme="light"] .nav-item:hover,
+:root[data-theme="light"] .nav-item.active { background: var(--bg-sidebar-hover); color: #fff; }
+:root[data-theme="light"] .sidebar-footer { color: #8f82a0; }
+:root[data-theme="light"] .header { background: var(--bg-elevated); }
+:root[data-theme="light"] .btn:hover { background: var(--bg-elevated); border-color: var(--accent); }
+:root[data-theme="light"] .btn-primary { background: var(--accent); color: #fff; }
+:root[data-theme="light"] .btn-primary:hover { background: var(--accent-strong); }
+:root[data-theme="light"] .input,
+:root[data-theme="light"] .select,
+:root[data-theme="light"] textarea.textarea { background: var(--bg-elevated); border-color: var(--border-strong); }
+:root[data-theme="light"] .search-bar { border-color: var(--border-strong); }
+:root[data-theme="light"] .badge-neutral,
+:root[data-theme="light"] .badge-pending { background: var(--border); }
+:root[data-theme="light"] .detail-backdrop { background: rgba(10, 5, 15, 0.25); }
