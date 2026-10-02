@@ -6,13 +6,15 @@ from fastapi.testclient import TestClient
 
 from babels_hoard.api import create_app
 
+from .agent_auth import agent_headers
+
 PORT = 18813
 
 
 @pytest.fixture()
 def client(tmp_path):
     app = create_app(tmp_path, None, port=PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=agent_headers(app)) as c:
         yield c
 
 
@@ -32,9 +34,30 @@ def test_no_ui_placeholder_page(client):
 
 
 def test_bad_host_rejected(client):
+    # The shared guard (hoard_link.guard) answers 403 {"error": message} for every rejected request.
     r = client.get("/api/health", headers={"Host": "evil.example.com"})
-    assert r.status_code == 400
-    assert r.json()["error"] == "bad_host"
+    assert r.status_code == 403
+    assert r.json() == {"error": "Only local access is allowed."}
+
+
+def test_host_naming_another_port_is_rejected(client):
+    assert client.get("/api/health", headers={"Host": "127.0.0.1:9"}).status_code == 403
+    assert client.get("/api/health", headers={"Host": f"localhost:{PORT}"}).status_code == 200
+
+
+def test_allowed_hosts_env_opens_a_lan_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("BABEL_ALLOWED_HOSTS", "babel.lan, *.ts.net")
+    app = create_app(tmp_path, None, port=PORT)
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+        assert c.get("/api/health", headers={"Host": "babel.lan"}).status_code == 200
+        assert c.get("/api/health", headers={"Host": f"babel.lan:{PORT + 1}"}).status_code == 403  # strict ports
+        assert c.get("/api/health", headers={"Host": "box.tail1234.ts.net"}).status_code == 200
+        assert c.get("/api/health", headers={"Host": "evil.example.com"}).status_code == 403
+
+
+def test_iframe_embedding_from_another_site_is_refused(client):
+    r = client.get("/api/health", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"})
+    assert r.status_code == 403
 
 
 def test_cross_site_post_rejected(client):
@@ -42,7 +65,7 @@ def test_cross_site_post_rejected(client):
         "/api/agent/docs_search", json={"query": "x"}, headers={"sec-fetch-site": "cross-site"}
     )
     assert r.status_code == 403
-    assert r.json()["error"] == "cross_site_blocked"
+    assert r.json()["error"] == "Cross-site requests are not allowed."
 
 
 def test_cross_origin_post_rejected(client):
@@ -64,7 +87,7 @@ def test_same_origin_post_allowed(client):
 
 
 def test_plain_get_navigation_always_works(client):
-    r = client.get("/api/health", headers={"Sec-Fetch-Site": "cross-site"})
+    r = client.get("/api/health", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"})
     assert r.status_code == 200
 
 

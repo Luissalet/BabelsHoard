@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 from babels_hoard.api import create_app
 from babels_hoard.locales import check_locales
 
+from .agent_auth import agent_headers
+
 
 def test_locale_catalog_reports_key_and_placeholder_drift(tmp_path):
     catalog = tmp_path / "locales"
@@ -45,7 +47,7 @@ def test_locale_catalog_agent_tool_is_read_only_and_audited(tmp_path):
     (catalog / "es.json").write_text('{"hello":"Hola {nombre}"}', encoding="utf-8")
     before = (catalog / "es.json").read_bytes()
     app = create_app(tmp_path / "app-data", None, port=18817)
-    with TestClient(app, base_url="http://127.0.0.1:18817") as client:
+    with TestClient(app, base_url="http://127.0.0.1:18817", headers=agent_headers(app)) as client:
         response = client.post("/api/agent/docs_check_locales", json={"path": str(catalog)})
         assert response.status_code == 200
         assert response.json()["findings"][0]["kind"] == "placeholder_mismatch"

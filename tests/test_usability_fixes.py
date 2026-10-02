@@ -76,6 +76,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from babels_hoard import environments  # noqa: E402
 from babels_hoard.api import create_app  # noqa: E402
 
+
+from .agent_auth import agent_headers  # noqa: E402
+
 FIXTURES = Path(__file__).parent / "fixtures"
 PORT = 18814
 
@@ -153,7 +156,7 @@ def test_b1_same_interpreter_keeps_its_id_when_node_modules_appears(conn, tmp_pa
 @pytest.fixture()
 def client(tmp_path):
     app = create_app(tmp_path / "data", None, port=PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=agent_headers(app)) as c:
         yield c
 
 

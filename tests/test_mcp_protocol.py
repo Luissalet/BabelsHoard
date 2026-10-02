@@ -71,6 +71,7 @@ async def test_mcp_stdio_list_and_call_tools(live_app, tmp_path):
 
     env = dict(os.environ)
     env["BABEL_URL"] = f"http://127.0.0.1:{live_app.port}"
+    env["BABEL_DATA_DIR"] = str(tmp_path)  # where the app wrote the mcp-token the adapter must send
     params = StdioServerParameters(command=sys.executable, args=[str(MCP_SERVER)], env=env)
 
     async with stdio_client(params) as (read, write):
@@ -147,6 +148,7 @@ async def test_mcp_tool_contract_for_a_local_model(live_app, tmp_path):
 
     env = dict(os.environ)
     env["BABEL_URL"] = f"http://127.0.0.1:{live_app.port}"
+    env["BABEL_DATA_DIR"] = str(tmp_path)  # where the app wrote the mcp-token the adapter must send
     params = StdioServerParameters(command=sys.executable, args=[str(MCP_SERVER)], env=env)
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

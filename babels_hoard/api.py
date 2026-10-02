@@ -10,17 +10,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
 from . import __version__, backend, checker, db, deps, docsets, environments, indexing, jobs, locales, markdown_index, node_indexing, search
 from .hoard_link import Link
-from .hoard_link import family
+from .hoard_link import family, tokens
+from .hoard_link.guard import install_guard
 
 
 SERVICE = "babels-hoard"
@@ -77,56 +77,6 @@ npm run build</pre>
 <p>Then restart the app. The API itself is already running — try
 <a href="/api/health">/api/health</a>.</p>
 </body></html>"""
-
-
-class BrowserGuardMiddleware(BaseHTTPMiddleware):
-    """DNS-rebinding + cross-site write protection. No CORS is configured, so
-    a browser tab on another origin cannot read responses anyway; this stops
-    it from causing *writes* via simple requests, and stops any client from
-    reaching this app through a non-loopback Host header."""
-
-    def __init__(self, app, port: int):
-        super().__init__(app)
-        self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        self.port = port
-
-    async def dispatch(self, request: Request, call_next):
-        host = request.headers.get("host", "")
-        if host not in self.allowed_hosts:
-            return JSONResponse(
-                {"error": "bad_host", "message": f"unexpected Host header: {host!r}"}, status_code=400
-            )
-        path = request.url.path
-        if (
-            request.method in ("GET", "HEAD")
-            and path.startswith("/api/")
-            and path != "/api/health"
-            and request.headers.get("sec-fetch-site") == "cross-site"
-            and request.headers.get("sec-fetch-mode") != "navigate"
-        ):
-            # Some API reads have side effects (lazy indexing runs the
-            # interpreter probe); another site must not trigger them through
-            # <img>/<script>/fetch. Top-level navigation keeps working.
-            return JSONResponse(
-                {"error": "cross_site_blocked", "message": "cross-site requests may not call the API"},
-                status_code=403,
-            )
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            origin = request.headers.get("origin")
-            sec_fetch_site = request.headers.get("sec-fetch-site")
-            if sec_fetch_site == "cross-site":
-                return JSONResponse(
-                    {"error": "cross_site_blocked", "message": "cross-site requests may not modify state"},
-                    status_code=403,
-                )
-            if origin is not None:
-                own_origins = {f"http://127.0.0.1:{self.port}", f"http://localhost:{self.port}"}
-                if origin not in own_origins:
-                    return JSONResponse(
-                        {"error": "cross_origin_blocked", "message": f"unexpected Origin: {origin!r}"},
-                        status_code=403,
-                    )
-        return await call_next(request)
 
 
 # ---------------------------------------------------------------- schemas --
@@ -235,7 +185,9 @@ def create_app(
         database.close_all()
 
     app = FastAPI(title=DISPLAY_NAME, version=__version__, lifespan=lifespan)
-    app.add_middleware(BrowserGuardMiddleware, port=port)
+    # The shared request guard: loopback Host (plus BABEL_ALLOWED_HOSTS for a LAN name or a tailnet), Origin and Fetch
+    # Metadata rules, WebSocket upgrades too. strict_ports keeps the old "Host names this app's own port" rule.
+    install_guard(app, port_getter=lambda: port, allowed_env="BABEL_ALLOWED_HOSTS", strict_ports=True)
     app.state.database = database
     app.state.job_mgr = job_mgr
     app.state.static_dir = static_dir
@@ -248,6 +200,18 @@ def create_app(
         link_factory = (lambda: link) if link is not None else (lambda: backend.build_link(data_dir, app="babel"))
     app.state.link_factory = link_factory
     app.state.link = link if link is not None else link_factory()
+
+    # The per-tool routes run the assistant's tools, some of them destructive: they need the same bearer token as
+    # POST /api/agent/call (data/mcp-token), which the MCP adapter sends. Without it any local process that passed
+    # the Host check could call them.
+    token_file = data_dir / "mcp-token"
+    tokens.read_or_create_token(token_file)
+
+    def require_agent_token(request: Request) -> None:
+        if not tokens.check_bearer(request.headers.get("authorization"), tokens.read_token(token_file) or ""):
+            raise AgentError("unauthorized", "Missing or invalid MCP token (see data/mcp-token).", status=401)
+
+    AGENT_AUTH = [Depends(require_agent_token)]
 
     def C():
         """This thread's own connection (request threads and the job worker
@@ -355,7 +319,7 @@ def create_app(
         }
 
     # ----------------------------------------------------- agent surface --
-    @app.post("/api/agent/docs_libraries")
+    @app.post("/api/agent/docs_libraries", dependencies=AGENT_AUTH)
     def agent_docs_libraries(args: DocsLibrariesArgs):
         def run(conn):
             if args.env:
@@ -372,7 +336,7 @@ def create_app(
 
         return call_tool("docs_libraries", f"ecosystem={args.ecosystem} env={args.env}", run)
 
-    @app.post("/api/agent/docs_search")
+    @app.post("/api/agent/docs_search", dependencies=AGENT_AUTH)
     def agent_docs_search(args: DocsSearchArgs):
         def run(conn):
             env_filter = environments.resolve_env(conn, args.env)["id"] if args.env else None
@@ -382,14 +346,14 @@ def create_app(
 
         return call_tool("docs_search", args.query, run)
 
-    @app.post("/api/agent/api_lookup")
+    @app.post("/api/agent/api_lookup", dependencies=AGENT_AUTH)
     def agent_api_lookup(args: ApiLookupArgs):
         def run(conn):
             return search.lookup_with_lazy_index(conn, args.symbol, env=args.env, library=args.library)
 
         return call_tool("api_lookup", args.symbol, run)
 
-    @app.post("/api/agent/api_check_code")
+    @app.post("/api/agent/api_check_code", dependencies=AGENT_AUTH)
     def agent_api_check_code(args: ApiCheckCodeArgs):
         def run(conn):
             if args.language not in ("python", "typescript"):
@@ -401,11 +365,11 @@ def create_app(
 
         return call_tool("api_check_code", f"{len(args.code)} chars, {args.language}", run)
 
-    @app.post("/api/agent/docs_read")
+    @app.post("/api/agent/docs_read", dependencies=AGENT_AUTH)
     def agent_docs_read(args: DocsReadArgs):
         return call_tool("docs_read", args.id, lambda conn: search.read_entry(conn, args.id, args.offset, args.max_chars))
 
-    @app.post("/api/agent/docs_add_environment")
+    @app.post("/api/agent/docs_add_environment", dependencies=AGENT_AUTH)
     def agent_docs_add_environment(args: DocsAddEnvironmentArgs):
         def run(conn):
             try:
@@ -437,7 +401,7 @@ def create_app(
 
         return call_tool("docs_add_environment", args.path, run)
 
-    @app.post("/api/agent/docs_catalog")
+    @app.post("/api/agent/docs_catalog", dependencies=AGENT_AUTH)
     def agent_docs_catalog(args: DocsCatalogArgs):
         def run(conn):
             try:
@@ -447,7 +411,7 @@ def create_app(
 
         return call_tool("docs_catalog", args.query, run)
 
-    @app.post("/api/agent/docs_install_docset")
+    @app.post("/api/agent/docs_install_docset", dependencies=AGENT_AUTH)
     def agent_docs_install_docset(args: DocsInstallDocsetArgs):
         def run(conn):
             slug = args.slug.strip()
@@ -464,7 +428,7 @@ def create_app(
 
         return call_tool("docs_install_docset", args.slug, run)
 
-    @app.post("/api/agent/docs_index_folder")
+    @app.post("/api/agent/docs_index_folder", dependencies=AGENT_AUTH)
     def agent_docs_index_folder(args: DocsIndexFolderArgs):
         def run(conn):
             try:
@@ -474,7 +438,7 @@ def create_app(
 
         return call_tool("docs_index_folder", args.path, run)
 
-    @app.post("/api/agent/docs_check_locales")
+    @app.post("/api/agent/docs_check_locales", dependencies=AGENT_AUTH)
     def agent_docs_check_locales(args: DocsCheckLocalesArgs):
         def run(_conn):
             try:

@@ -11,13 +11,15 @@ from fastapi.testclient import TestClient
 from babels_hoard import api as api_module
 from babels_hoard import db, docsets, markdown_index
 
+from .agent_auth import agent_headers
+
 PORT = 18815
 
 
 @pytest.fixture()
 def client(tmp_path):
     app = api_module.create_app(tmp_path, None, port=PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=agent_headers(app)) as c:
         yield c
 
 

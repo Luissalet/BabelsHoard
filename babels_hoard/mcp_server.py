@@ -9,6 +9,7 @@ through FastAPI's TestClient without a real MCP client.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -30,6 +31,27 @@ def _app_url() -> tuple[str, str | None]:
 
 
 APP_URL, URL_PROBLEM = _app_url()
+
+
+def _token_file() -> Path:
+    """``$BABEL_TOKEN_FILE``, else ``<$BABEL_DATA_DIR or the repo's data folder>/mcp-token`` (what the app writes)."""
+    explicit = os.environ.get("BABEL_TOKEN_FILE", "").strip()
+    if explicit:
+        return Path(explicit)
+    data = os.environ.get("BABEL_DATA_DIR", "").strip()
+    return (Path(data) if data else Path(__file__).resolve().parent.parent / "data") / "mcp-token"
+
+
+def _token() -> str:
+    """The bearer token the app requires on /api/agent/<tool>: ``$BABEL_TOKEN`` or the token file, read on every call
+    (the app may have created it after this adapter started)."""
+    given = os.environ.get("BABEL_TOKEN", "").strip()
+    if given:
+        return given
+    try:
+        return _token_file().read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return ""
 
 mcp = FastMCP(
     "Babel's Hoard",
@@ -58,7 +80,9 @@ def _post(tool: str, payload: dict) -> dict:
     try:
         # trust_env=False: never route loopback traffic through a system proxy.
         with httpx.Client(base_url=APP_URL, timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False) as client:
-            resp = client.post(f"/api/agent/{tool}", json=payload)
+            token = _token()
+            resp = client.post(f"/api/agent/{tool}", json=payload,
+                               headers={"Authorization": f"Bearer {token}"} if token else {})
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise ToolError(
             "babel_unavailable: Babel's Hoard is not running. Start it from Faustus "
@@ -71,6 +95,11 @@ def _post(tool: str, payload: dict) -> dict:
         ) from exc
     except httpx.HTTPError as exc:
         raise ToolError(f"babel_unavailable: could not talk to Babel's Hoard at {APP_URL}: {exc}") from exc
+    if resp.status_code == 401:
+        raise ToolError(
+            f"babel_unauthorized: the app refused this adapter's token; it reads {_token_file()} "
+            "(set BABEL_DATA_DIR / BABEL_TOKEN_FILE if the app uses another data folder)."
+        )
     if resp.status_code >= 400:
         try:
             body = resp.json()

@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 
 from babels_hoard.api import create_app
 
+from .agent_auth import agent_headers
+
 PORT = 18814
 
 
@@ -23,7 +25,7 @@ def spa_client(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP-SECRET", encoding="utf-8")
     app = create_app(tmp_path / "data", static, port=PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=agent_headers(app)) as c:
         yield c
 
 
@@ -75,7 +77,7 @@ def test_cross_site_write_blocked_even_without_origin(spa_client):
 def test_dns_rebinding_host_rejected_on_every_route(spa_client):
     for path in ("/", "/api/health", "/assets/app.js"):
         r = spa_client.get(path, headers={"Host": f"attacker.example:{PORT}"})
-        assert r.status_code == 400
+        assert r.status_code == 403
 
 
 def test_cross_site_subresource_gets_to_the_api_are_blocked(spa_client):
@@ -84,8 +86,11 @@ def test_cross_site_subresource_gets_to_the_api_are_blocked(spa_client):
     headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}
     assert spa_client.get("/api/lookup?symbol=json.dumps", headers=headers).status_code == 403
     assert spa_client.get("/api/jobs", headers=headers).status_code == 403
-    # health stays reachable for Faustus / any tab, and so does navigation
-    assert spa_client.get("/api/health", headers=headers).status_code == 200
+    # The shared guard applies the same rule to every path (health and the SPA shell included); top-level navigation
+    # keeps working, and so does anything without Fetch Metadata (curl, the MCP adapter, Faustus's server-side probes).
+    assert spa_client.get("/api/health", headers=headers).status_code == 403
+    assert spa_client.get("/", headers=headers).status_code == 403
     nav = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
     assert spa_client.get("/api/jobs", headers=nav).status_code == 200
-    assert spa_client.get("/", headers=headers).status_code == 200
+    assert spa_client.get("/", headers=nav).status_code == 200
+    assert spa_client.get("/api/health").status_code == 200
