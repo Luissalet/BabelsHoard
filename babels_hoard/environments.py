@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db
+from .hoard_link import proc
 
 PROBE_PATH = Path(__file__).parent / "probes" / "python_probe.py"
 
@@ -57,14 +58,6 @@ def detect_node_modules(project_dir: Path) -> Path | None:
         if candidate.is_dir():
             return candidate
     return None
-
-
-def subprocess_flags() -> dict[str, Any]:
-    """Keyword arguments for helper subprocesses: on Windows, never flash a
-    console window (the app itself may run without one, e.g. from Faustus)."""
-    if sys.platform == "win32":
-        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
-    return {}
 
 
 def looks_like_python(path: Path) -> bool:
@@ -124,29 +117,18 @@ def probe_python(python_exe: Path, timeout: int = 30, use_cache: bool = True) ->
             cached = _PROBE_CACHE.get(key)
         if cached and cached[0] == _probe_fingerprint(python_exe, cached[1]):
             return cached[1]
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
-    env.pop("PYTHONPATH", None)  # probe the interpreter as the project sees it, not our env
+    # Probe the interpreter as the project sees it, not with our own PYTHONPATH; UTF-8 output on every platform.
+    env = proc.build_env(None, PYTHONPATH=None)
     try:
-        proc = subprocess.run(
-            [str(python_exe), "-X", "utf8", str(PROBE_PATH)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            **subprocess_flags(),
-        )
+        done = proc.run([python_exe, "-X", "utf8", PROBE_PATH], timeout=timeout, env=env)
     except subprocess.TimeoutExpired as exc:
         raise ProbeError(f"probe timed out after {timeout}s") from exc
     except OSError as exc:
         raise ProbeError(f"could not run interpreter: {exc}") from exc
-    if proc.returncode != 0:
-        raise ProbeError(f"probe failed (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
+    if done.returncode != 0:
+        raise ProbeError(f"probe failed (exit {done.returncode}): {done.stderr.strip()[:500]}")
     try:
-        result = json.loads(proc.stdout.strip().splitlines()[-1])
+        result = json.loads(done.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError) as exc:
         raise ProbeError(f"probe returned unparsable output: {exc}") from exc
     with _PROBE_LOCK:

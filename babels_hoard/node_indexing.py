@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db
-from .environments import subprocess_flags
+from .hoard_link import proc
 from .indexing import INDEX_LOCK, library_id
 
 # npm package names: optional @scope/, lowercase-ish, no path tricks.
@@ -38,19 +38,14 @@ def ensure_probe_deps(timeout: int = 120) -> None:
     npm = shutil.which("npm")
     if not npm:
         raise NodeIndexError("npm not found; cannot install the TypeScript compiler API")
-    proc = subprocess.run(
-        [npm, "ci", "--no-audit", "--no-fund"],
-        cwd=str(PROBE_DIR),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        stdin=subprocess.DEVNULL,
-        **subprocess_flags(),
-    )
-    if proc.returncode != 0:
-        raise NodeIndexError(f"npm ci failed: {proc.stderr.strip()[:500]}")
+    try:
+        done = proc.run([npm, "ci", "--no-audit", "--no-fund"], cwd=PROBE_DIR, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise NodeIndexError(f"npm ci timed out after {timeout}s") from exc
+    except OSError as exc:
+        raise NodeIndexError(f"could not run npm: {exc}") from exc
+    if done.returncode != 0:
+        raise NodeIndexError(f"npm ci failed: {done.stderr.strip()[:500]}")
 
 
 def run_probe(node_modules_dir: Path, package_name: str, timeout: int = 60) -> dict[str, Any]:
@@ -59,22 +54,15 @@ def run_probe(node_modules_dir: Path, package_name: str, timeout: int = 60) -> d
         raise NodeIndexError("Node.js not found")
     ensure_probe_deps()
     try:
-        proc = subprocess.run(
-            [node, str(PROBE_SCRIPT), str(node_modules_dir), package_name],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-            **subprocess_flags(),
-        )
+        done = proc.run([node, PROBE_SCRIPT, node_modules_dir, package_name], timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise NodeIndexError(f"probe timed out after {timeout}s") from exc
-    if proc.returncode != 0:
-        raise NodeIndexError(f"probe crashed: {proc.stderr.strip()[:500]}")
+    except OSError as exc:
+        raise NodeIndexError(f"could not run node: {exc}") from exc
+    if done.returncode != 0:
+        raise NodeIndexError(f"probe crashed: {done.stderr.strip()[:500]}")
     try:
-        return json.loads(proc.stdout.strip().splitlines()[-1])
+        return json.loads(done.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError) as exc:
         raise NodeIndexError(f"probe returned unparsable output: {exc}") from exc
 
