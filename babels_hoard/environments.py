@@ -257,11 +257,18 @@ def register_environment(
     return result
 
 
+_last_registration_ms = 0
+
+
 def _registration_time() -> str:
     """Like ``db.now()`` with milliseconds, so two registrations in the same
-    second still order correctly (the newest is the default)."""
-    t = time.time()
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
+    second still order correctly (the newest is the default). Strictly
+    increasing within the process: two registrations in the same millisecond
+    would otherwise tie and the older row could win on rowid."""
+    global _last_registration_ms
+    ms = max(int(time.time() * 1000), _last_registration_ms + 1)
+    _last_registration_ms = ms
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ms / 1000)) + f".{ms % 1000:03d}Z"
 
 
 def _read_node_version(project_path: Path | None) -> str | None:
