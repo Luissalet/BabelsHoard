@@ -10,15 +10,20 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-import httpx
-
 from . import db
-from .html_to_markdown import html_fragment_to_markdown
+from .hoard_link.web.fetch import Fetcher
+from .hoard_link.web.htmltext import to_markdown
 from .indexing import INDEX_LOCK, library_id
 
 CATALOG_URL = "https://devdocs.io/docs.json"
 DOCUMENTS_BASE = "https://documents.devdocs.io"
 DOC_CAP = 8000
+
+# The biggest DevDocs databases are a few hundred MB of JSON; the shared fetcher stops at its byte cap, so say it.
+MAX_DOWNLOAD_BYTES = 600 * 1024 * 1024
+INDEX_TIMEOUT_S = 60.0
+DB_TIMEOUT_S = 300.0
+CATALOG_TIMEOUT_S = 30.0
 
 _ID_RE = re.compile(r'id="([^"]+)"')
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_.~\-]{0,80}$")
@@ -30,19 +35,33 @@ def valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug or "")) and ".." not in slug
 
 
-def _resolve_catalog_url(client: httpx.Client) -> str:
-    resp = client.get(CATALOG_URL, follow_redirects=True, timeout=30)
-    resp.raise_for_status()
-    return str(resp.url)
+class DocsetDownloadError(RuntimeError):
+    """A download from the DevDocs mirror failed (network, a bad status, a body that is not JSON, or one over the cap)."""
+
+
+def _fetcher() -> Fetcher:
+    """The shared polite fetcher (one browser-like User-Agent for the family, a byte cap, one retry with backoff, SSRF
+    policy at every redirect). Tests replace this function to inject a mock transport."""
+    return Fetcher(max_bytes=MAX_DOWNLOAD_BYTES, min_interval_s=0.5, retries=2)
+
+
+def _get_json(fetcher: Fetcher, url: str, timeout: float) -> Any:
+    result, data = fetcher.get_json(url, timeout=timeout)
+    if result.truncated:
+        raise DocsetDownloadError(f"{url}: larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB, not downloaded")
+    if not result.ok:
+        raise DocsetDownloadError(f"{url}: {result.error or 'HTTP ' + str(result.status)}")
+    return data
+
+
+def html_fragment_to_markdown(html: str) -> str:
+    """Markdown of one HTML fragment (the shared converter: ``hoard_link.web.htmltext.to_markdown``)."""
+    return to_markdown(html)["markdown"]
 
 
 def catalog(query: str = "", limit: int = 10) -> dict[str, Any]:
     limit = max(1, min(limit, 50))
-    with httpx.Client() as client:
-        url = _resolve_catalog_url(client)
-        resp = client.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+    data = _get_json(_fetcher(), CATALOG_URL, CATALOG_TIMEOUT_S)
     q = query.strip().lower()
     if q:
         data = [d for d in data if q in d["name"].lower() or q in d["slug"].lower()]
@@ -166,22 +185,17 @@ def install_from_data(
 def install(conn, slug: str, progress: Callable[[float, str], None] | None = None) -> dict[str, Any]:
     if not valid_slug(slug):
         raise ValueError(f"not a docset slug: {slug!r}")
-    with httpx.Client(follow_redirects=True) as client:
-        catalog_url = _resolve_catalog_url(client)
-        all_docs = client.get(catalog_url, timeout=30).json()
-        meta = next((d for d in all_docs if d["slug"] == slug), None)
-        if meta is None:
-            raise ValueError(f"unknown docset slug: {slug!r}")
-        if progress:
-            progress(0.05, "downloading index")
-        resp = client.get(f"{DOCUMENTS_BASE}/{slug}/index.json", timeout=60)
-        resp.raise_for_status()
-        index_data = resp.json()
-        if progress:
-            progress(0.1, f"downloading pages ({meta.get('db_size', 0) // 1_000_000} MB)")
-        resp = client.get(f"{DOCUMENTS_BASE}/{slug}/db.json", timeout=300)
-        resp.raise_for_status()
-        db_data = resp.json()
+    fetcher = _fetcher()
+    all_docs = _get_json(fetcher, CATALOG_URL, CATALOG_TIMEOUT_S)
+    meta = next((d for d in all_docs if d["slug"] == slug), None)
+    if meta is None:
+        raise ValueError(f"unknown docset slug: {slug!r}")
+    if progress:
+        progress(0.05, "downloading index")
+    index_data = _get_json(fetcher, f"{DOCUMENTS_BASE}/{slug}/index.json", INDEX_TIMEOUT_S)
+    if progress:
+        progress(0.1, f"downloading pages ({meta.get('db_size', 0) // 1_000_000} MB)")
+    db_data = _get_json(fetcher, f"{DOCUMENTS_BASE}/{slug}/db.json", DB_TIMEOUT_S)
     return install_from_data(
         conn, slug, meta["name"], meta.get("version") or meta.get("release") or "", index_data, db_data, progress
     )
