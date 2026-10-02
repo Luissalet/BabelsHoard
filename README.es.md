@@ -185,7 +185,10 @@ hay ningún modelo de lenguaje conectado...», y el detalle de la detección
 como descripción emergente) y el resto de pantallas no se ven afectadas. Un
 `backend.json` roto a mano nunca impide arrancar: la aplicación vuelve a la
 detección automática y Ajustes -> Modelos explica por qué se ignoró el
-archivo.
+archivo. Los embeddings salen primero de Borges's Hoard a través del hub
+(`fam_embed`) y del backend local cuando no se puede llegar a Borges; la
+descarga de docsets y la conversión de HTML a Markdown usan el fetcher y el
+conversor compartidos de Hoard Link.
 
 ## Arquitectura
 
@@ -211,8 +214,11 @@ Módulos, modelo de datos y las decisiones detrás del comprobador:
 
 ## Privacidad y seguridad
 
-Solo escucha en `127.0.0.1`; rechaza peticiones con un `Host` ajeno,
-escrituras desde otros sitios y lecturas de la API desde otros sitios. Sin
+Solo escucha en `127.0.0.1`; el guard compartido de Hoard Link rechaza un
+`Host` ajeno (`BABEL_ALLOWED_HOSTS` abre un nombre de la LAN o una tailnet) y
+las peticiones de otros sitios que no sean navegación de nivel superior; las
+rutas por herramienta del asistente solo responden al token de
+`data/mcp-token`. Sin
 telemetría. Solo el catálogo y la instalación de docsets usan la red (el
 espejo público de DevDocs; su contenido mantiene sus licencias originales).
 Babel ejecuta los intérpretes que registras únicamente para lanzar su

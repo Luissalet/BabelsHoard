@@ -175,7 +175,10 @@ connected**; the "Ask the docs" button is simply disabled with an honest
 reason ("No language model is connected...", plus the probe details as a
 tooltip) and every other screen is unaffected. A broken, hand-edited
 `backend.json` never stops the app: it falls back to auto-detection and
-Settings -> Models says why the file was ignored.
+Settings -> Models says why the file was ignored. Embeddings come from Borges's
+Hoard through the hub first (`fam_embed`) and from the local backend when Borges
+cannot be reached; docset downloads and the HTML-to-Markdown conversion use the
+shared fetcher and converter of Hoard Link.
 
 ## Architecture
 
@@ -200,8 +203,10 @@ Modules, data model and the decisions behind the checker:
 
 ## Privacy and security
 
-Binds `127.0.0.1` only; requests with a foreign `Host`, cross-site writes
-and cross-site API reads are refused. No telemetry. Only the docset
+Binds `127.0.0.1` only; the shared Hoard Link guard refuses a foreign `Host`
+(`BABEL_ALLOWED_HOSTS` opens a LAN name or tailnet), cross-site requests that are
+not top-level navigations, and the assistant's per-tool routes answer only to
+the bearer token in `data/mcp-token`. No telemetry. Only the docset
 catalogue and docset installs use the network (the public DevDocs mirror;
 docset content keeps its original licences). Babel runs the interpreters
 you register, only to execute its stdlib-only probe script, and only files
@@ -221,7 +226,7 @@ cd frontend; npm run build
 On Linux/macOS the same with `.venv/bin/python`. **159 tests, about a
 minute on a shared 2-CPU Linux machine**, with no network, no GPU and no
 model downloads. They cover: the
-browser guard and static-file confinement (path traversal attempts), error
+the shared request guard, the agent token and static-file confinement (path traversal attempts), error
 shapes, per-thread connections and a health check that answers while a
 long tool runs; indexing of real installed packages (httpx, pydantic,
 fastapi, PyJWT, python-dotenv, the stdlib) and of two fixture packages -

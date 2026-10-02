@@ -22,7 +22,11 @@ Reglas para agentes de código que trabajen en este repositorio.
   `indexing.py` y añade el caso a `tests/fixtures/edgelib` y a
   `tests/test_checker_edges.py`.
 - Escribe primero el test que falla y después el arreglo.
-- `mcp_server.py` es un script independiente: solo stdlib, `httpx` y `mcp`.
+- `mcp_server.py` es un script independiente: solo stdlib, `httpx` y `mcp`. Envía el token de `data/mcp-token`
+  (`BABEL_TOKEN`, `BABEL_TOKEN_FILE` o `BABEL_DATA_DIR`) porque las rutas `/api/agent/<tool>` lo exigen.
+- Lo que el repo compartido ya hace no se reescribe aquí: guard (`hoard_link.guard`), procesos (`hoard_link.proc`),
+  descargas (`hoard_link.web.fetch`), HTML a Markdown (`hoard_link.web.htmltext`), vectores (`hoard_link.docs.vecmath`).
+  Nunca edites `babels_hoard/hoard_link/` (es una copia).
 - Una herramienta nueva en `/api/agent/<tool>`: salida compacta con ids y
   `truncated`/`has_more`, registrada con `call_tool(...)`, con su tool MCP
   (docstring + línea `Keywords:` en inglés y español, anotaciones honestas)

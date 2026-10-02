@@ -18,8 +18,8 @@ babels_hoard/
   checker.py         api_check_code for Python (ast) and TypeScript imports (v1)
   search.py          FTS5 search, api_lookup payloads, docs_read, library listings
   node_indexing.py   runs probes/ts_probe.mjs (TypeScript compiler API) on node_modules
-  docsets.py         DevDocs catalogue and install, split by section anchors
-  html_to_markdown.py  small stdlib-only HTML -> Markdown converter
+  docsets.py         DevDocs catalogue and install (shared Fetcher), split by section anchors, converted with
+                     hoard_link.web.htmltext
   markdown_index.py  folder-of-markdown indexing
   deps.py            direct dependencies from pyproject.toml / requirements*.txt
   probes/
@@ -201,11 +201,13 @@ an exact identifier query always considers every entry with that name.
 
 ## HTTP layer
 
-`BrowserGuardMiddleware`: a `Host` other than `127.0.0.1:<port>` /
-`localhost:<port>` is rejected (DNS rebinding); writes with a foreign
-`Origin` or `Sec-Fetch-Site: cross-site` are rejected; cross-site GETs to
-`/api/*` other than `/api/health` are rejected unless they are top-level
-navigations (some reads index packages). No CORS headers. The SPA route
+The shared guard (`hoard_link.guard.install_guard`, with `strict_ports=True`): a `Host` other than loopback on this
+app's own port is rejected (DNS rebinding) with `403 {"error": "Only local access is allowed."}`; a LAN name or a
+tailnet is opened with `BABEL_ALLOWED_HOSTS` (comma-separated, `*.suffix` allowed); a foreign `Origin`, a cross-site
+request that is not a top-level navigation (reads index packages, so this covers `<img>`/`fetch` GETs too), a form
+post and a cross-site `iframe` are rejected; WebSocket upgrades get the same checks. No CORS headers. The per-tool
+`/api/agent/<tool>` routes also need `Authorization: Bearer <data/mcp-token>` (the MCP adapter sends it; `GET
+/api/agent/tools` and every UI route stay open). The SPA route
 serves a file only if its resolved path stays inside `frontend/dist`.
 Validation and routing errors use the same `{error, message}` shape as tool
 errors. `/api/agent/*` calls are timed and written to `agent_calls`; the UI
