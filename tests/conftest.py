@@ -8,6 +8,13 @@ import pytest  # noqa: E402
 
 from babels_hoard import db, environments  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def no_live_family_services(monkeypatch):
+    """A running sibling app must not change the local fallback tests."""
+    from babels_hoard.hoard_link import _famsvc
+    monkeypatch.setattr(_famsvc, "call_tool", lambda *a, **k: _famsvc.fail("hub_down", "test hub is offline"))
+
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
 
