@@ -12,14 +12,15 @@ which is the only place this app calls a model.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import math
 import os
 import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .hoard_link import BackendError, Link, LinkConfig, Unavailable
+from .hoard_link import BackendError, Link, LinkConfig, Unavailable, fam_embed
+from .hoard_link.docs import vecmath
 
 USED_CAPABILITIES = ("llm", "embeddings")
 
@@ -155,36 +156,37 @@ def _candidate_text(hit: dict[str, Any]) -> str:
     return " - ".join(p for p in parts if p)
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / (na * nb)
-
-
 _RRF_K = 60
 
 
 def _fuse(candidates: list[dict[str, Any]], similarities: list[float]) -> list[dict[str, Any]]:
-    """Hybrid order: reciprocal-rank fusion of the lexical (FTS) order and
+    """Hybrid order: reciprocal-rank fusion (``vecmath.rrf``) of the lexical (FTS) order and
     the embedding-similarity order.
 
     Neither signal alone decides: an exact identifier match that a small
     embedding model scores poorly still stays near the top, and a hit
     phrased differently from the question can climb past lexical noise.
     """
-    by_similarity = sorted(range(len(candidates)), key=lambda i: similarities[i], reverse=True)
-    semantic_rank = {i: rank for rank, i in enumerate(by_similarity)}
-    fused = sorted(
-        range(len(candidates)),
-        key=lambda i: 1.0 / (_RRF_K + i) + 1.0 / (_RRF_K + semantic_rank[i]),
-        reverse=True,
-    )
-    return [candidates[i] for i in fused]
+    lexical = list(range(len(candidates)))
+    semantic = sorted(lexical, key=lambda i: similarities[i], reverse=True)
+    return [candidates[i] for i, _score in vecmath.rrf([lexical, semantic], k=_RRF_K)]
+
+
+def _similarities(question: str, texts: list[str], link: Link, *, local_fallback: bool) -> Optional[list[float]]:
+    """Cosine similarity of the question to each text, or None when no embedding model answered.
+
+    Borges's embedder (through the hub) is asked first; ``link.embed`` answers when Borges cannot be reached and the
+    local backend resolves ``embeddings`` (``local_fallback``). The question and the texts must come from the same
+    model: when they do not, the vectors cannot be compared and the lexical order stands."""
+    docs = fam_embed.embed_texts(texts, kind="document", link=link, local_fallback=local_fallback)
+    if not docs.get("ok"):
+        return None
+    query = fam_embed.embed_query(question, link=link, local_fallback=local_fallback)
+    if not query.get("ok") or query.get("via") != docs.get("via") or query.get("dim") != docs.get("dim"):
+        return None
+    if query.get("model") != docs.get("model"):
+        return None
+    return [vecmath.cosine(query["vector"], v) for v in docs["vectors"]]
 
 
 def _context_block(hits: list[dict[str, Any]]) -> str:
@@ -248,15 +250,15 @@ async def ask_the_docs(
 
     semantic_rerank = False
     embed_res = await link.resolve("embeddings")
-    if embed_res.resolved:
-        try:
-            texts = [question] + [_candidate_text(h) for h in candidates]
-            vectors = await link.embed(texts)
-            if len(vectors) == len(texts):
-                candidates = _fuse(candidates, [_cosine(vectors[0], v) for v in vectors[1:]])
-                semantic_rerank = True
-        except Exception:  # noqa: BLE001 - fall back to lexical order silently
-            semantic_rerank = False
+    try:
+        sims = await asyncio.to_thread(
+            _similarities, question, [_candidate_text(h) for h in candidates], link, local_fallback=bool(embed_res.resolved)
+        )
+        if sims is not None and len(sims) == len(candidates):
+            candidates = _fuse(candidates, sims)
+            semantic_rerank = True
+    except Exception:  # noqa: BLE001 - fall back to lexical order silently
+        semantic_rerank = False
 
     context_hits = candidates[:_MAX_CONTEXT_ENTRIES]
     prompt = (

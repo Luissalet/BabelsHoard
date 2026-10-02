@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from babels_hoard import backend, db, search
 from babels_hoard.api import create_app
 
+from .agent_auth import agent_headers
+
 from .fake_link import FakeLink, factory_of, resolved, unresolved
 
 PORT = 18814
@@ -19,7 +21,7 @@ def _app(tmp_path, **kwargs):
 
 
 def _client(app):
-    return TestClient(app, base_url=f"http://127.0.0.1:{PORT}")
+    return TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=agent_headers(app))
 
 
 # --------------------------------------------------------------- /api/backend
@@ -179,9 +181,47 @@ def test_ask_hybrid_rerank_when_embeddings_resolve(indexed_data_dir):
         r = c.post("/api/ask", json={"question": "how do I send a get request"})
         body = r.json()
         assert body["semantic_rerank"] is True
-        assert len(link.embed_calls) == 1
-        # query + one text per candidate
+        # Borges's embedder (through the hub) is asked first; with no hub the local backend answers: one call for the
+        # candidates (documents), one for the question (a query), from the same model.
+        assert len(link.embed_calls) == 2
         assert len(link.embed_calls[0]) >= 2
+        assert len(link.embed_calls[1]) == 1
+
+
+def test_ask_prefers_borges_embeddings_when_the_hub_answers(indexed_data_dir, monkeypatch):
+    from babels_hoard.hoard_link import fam_embed
+
+    calls = []
+
+    def fake_call(owner, tool, args=None, *, timeout_s=120.0):
+        calls.append((owner, tool, dict(args or {})))
+        n = len(args["texts"])
+        vectors = [[1.0, 0.0] if i % 2 == 0 else [0.0, 1.0] for i in range(n)]
+        return {"ok": True, "kind": "", "error": "", "data": {"vectors": vectors, "model": "borges-test", "normalized": True}}
+
+    monkeypatch.setattr(fam_embed._s, "call_tool", fake_call)
+    # The local backend has no embeddings model: Borges alone must be enough for the semantic re-rank.
+    link = FakeLink(resolutions={"llm": resolved("llm"), "embeddings": unresolved("embeddings")})
+    with _client(_app(indexed_data_dir, link=link)) as c:
+        body = c.post("/api/ask", json={"question": "how do I send a get request"}).json()
+    assert body["semantic_rerank"] is True
+    assert link.embed_calls == []
+    assert [c[:2] for c in calls] == [("borges", "embed_texts")] * 2
+    assert calls[0][2]["kind"] == "document" and calls[1][2]["kind"] == "query"
+
+
+def test_ask_keeps_the_lexical_order_when_the_two_embedding_models_differ(indexed_data_dir, monkeypatch):
+    from babels_hoard.hoard_link import fam_embed
+
+    def fake_call(owner, tool, args=None, *, timeout_s=120.0):
+        model = "doc-model" if args["kind"] == "document" else "query-model"
+        return {"ok": True, "kind": "", "error": "", "data": {"vectors": [[1.0, 0.0]] * len(args["texts"]), "model": model}}
+
+    monkeypatch.setattr(fam_embed._s, "call_tool", fake_call)
+    link = FakeLink(resolutions={"llm": resolved("llm"), "embeddings": unresolved("embeddings")})
+    with _client(_app(indexed_data_dir, link=link)) as c:
+        body = c.post("/api/ask", json={"question": "how do I send a get request"}).json()
+    assert body["answered"] is True and body["semantic_rerank"] is False
 
 
 def test_ask_soft_failure_when_chat_call_fails(indexed_data_dir):
