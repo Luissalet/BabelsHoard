@@ -160,6 +160,16 @@ Any MCP client can use it over stdio:
 }
 ```
 
+## Faustus assistant
+
+Once the shared Hoard Link launcher is installed, the app shows the family's Faustus panel (a floating button). The conversation, the model and the tools live in Faustus; this app only tells the panel what is open.
+
+- **Context per view.** The panel receives the page (`search`, `libraries`, `check`, `docsets`, `activity`, `settings`) and up to 8 open objects with real ids: `environment` (id, label), `docset` (slug, name) and `entry` (id, qualified name, entry kind), plus the section of an entry as a preview with its signature. Creation views give no object.
+- **Unsaved fields.** The panel asks for them with the `babel:context-request` window event. The forms `search-form`, `docset-search`, `check-form` (the pasted code is cut to 2,000 characters), `folder-form`, `environment-new`, `library-index-form`, `models-form` and `entry-detail` answer with the fields typed so far. The Faustus token is a secret: only the fact that one was typed is reported.
+- **Refresh.** When the assistant finishes a turn the open page reloads in place (`hoard:copilot-turn-end` / `window.hoardCopilot.onTurnEnd`) without losing what you are typing.
+- **Saving.** The Settings form sends only the fields you changed. `save_overrides` (behind `PUT /api/backend/config`) now does its read, merge and write under one lock, so two saves never lose each other's fields and the fields not sent keep their value.
+- **Tests.** `node --test frontend/copilot-context.test.mjs` and `python -m pytest tests/test_backend.py`.
+
 ## Shared models (HoardLink)
 
 Babel's Hoard never loads its own model. For "Ask the docs" it uses two

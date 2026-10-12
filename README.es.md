@@ -166,6 +166,16 @@ Funciona con cualquier cliente MCP por stdio:
 }
 ```
 
+## Asistente de Faustus
+
+Con el lanzador compartido de Hoard Link instalado, la app muestra el panel de Faustus de la familia (un botón flotante). La conversación, el modelo y las herramientas viven en Faustus; esta app solo le dice al panel qué hay abierto.
+
+- **Contexto por vista.** El panel recibe la página (`search`, `libraries`, `check`, `docsets`, `activity`, `settings`) y hasta 8 objetos abiertos con ids reales: `environment` (id, etiqueta), `docset` (slug, nombre) y `entry` (id, nombre cualificado, tipo de entrada), más la sección de una entrada como vista previa con su firma. Las vistas de creación no dan objeto.
+- **Campos sin guardar.** El panel los pide con el evento de ventana `babel:context-request`. Los formularios `search-form`, `docset-search`, `check-form` (el código pegado se corta a 2.000 caracteres), `folder-form`, `environment-new`, `library-index-form`, `models-form` y `entry-detail` responden con lo escrito hasta ahora. El token de Faustus es un secreto: solo se indica que se ha escrito uno.
+- **Refresco.** Cuando el asistente termina un turno, la página abierta se recarga en el sitio (`hoard:copilot-turn-end` / `window.hoardCopilot.onTurnEnd`) sin perder lo que estás escribiendo.
+- **Guardado.** El formulario de Ajustes envía solo los campos que has cambiado. `save_overrides` (detrás de `PUT /api/backend/config`) hace ahora la lectura, la fusión y la escritura bajo un mismo bloqueo, así que dos guardados nunca se pisan los campos y los campos no enviados conservan su valor.
+- **Pruebas.** `node --test frontend/copilot-context.test.mjs` y `python -m pytest tests/test_backend.py`.
+
 ## Modelos compartidos (HoardLink)
 
 Babel's Hoard nunca carga su propio modelo. Para «Preguntar a la
