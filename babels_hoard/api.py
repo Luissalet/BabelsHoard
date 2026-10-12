@@ -646,6 +646,11 @@ def create_app(
         ).fetchall()
         return db.dump_all(rows)
 
+    # The shared Faustus assistant panel: relay routes + launcher script, and
+    # the launcher injected into the HTML pages. Before the SPA catch-all.
+    from .hoard_link.copilot import install_copilot
+    install_copilot(app, "babel", str(data_dir), app_name=DISPLAY_NAME)
+
     # -------------------------------------------------------- frontend ---
     if static_dir and static_dir.is_dir() and (static_dir / "index.html").is_file():
         static_root = static_dir.resolve()
