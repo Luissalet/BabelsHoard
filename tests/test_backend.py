@@ -316,3 +316,54 @@ def test_fuse_agreeing_signals_keep_the_order():
     cands = [{"id": f"e{i}"} for i in range(5)]
     sims = [1.0 - 0.1 * i for i in range(5)]
     assert [c["id"] for c in backend._fuse(cands, sims)] == ["e0", "e1", "e2", "e3", "e4"]
+
+
+def test_partial_config_patch_keeps_every_field_not_sent(tmp_path):
+    """The Settings form sends only the fields the user changed: what is
+    already saved (an edit made elsewhere meanwhile) must survive."""
+    backend.save_overrides(
+        tmp_path,
+        {"faustus": {"url": "http://127.0.0.1:7005", "token": "ody_secret"}, "capabilities": {"llm": {"url": "http://127.0.0.1:8081", "model": "qwen"}}},
+    )
+    link = FakeLink()
+    with _client(_app(tmp_path, link=link, link_factory=factory_of(link))) as c:
+        r = c.put("/api/backend/config", json={"capabilities": {"llm": {"model": "qwen2"}}})
+        assert r.status_code == 200
+        cfg = r.json()["config"]
+        assert cfg["capabilities"]["llm"] == {"url": "http://127.0.0.1:8081", "model": "qwen2"}
+        assert cfg["faustus"] == {"url": "http://127.0.0.1:7005", "token_set": True}
+        # a patch for another section leaves the first one alone
+        r = c.put("/api/backend/config", json={"capabilities": {"embeddings": {"model": "nomic"}}})
+        assert r.json()["config"]["capabilities"]["llm"] == {"url": "http://127.0.0.1:8081", "model": "qwen2"}
+    raw = json.loads((tmp_path / "backend.json").read_text(encoding="utf-8"))
+    assert raw["faustus"]["token"] == "ody_secret"
+
+
+def test_concurrent_partial_saves_do_not_lose_each_other(tmp_path):
+    import threading
+
+    errors = []
+
+    def save(patch):
+        try:
+            backend.save_overrides(tmp_path, patch)
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    patches = [
+        {"capabilities": {"llm": {"url": "http://127.0.0.1:8081"}}},
+        {"capabilities": {"llm": {"model": "qwen"}}},
+        {"capabilities": {"embeddings": {"url": "http://127.0.0.1:11434"}}},
+        {"capabilities": {"embeddings": {"model": "nomic"}}},
+        {"faustus": {"url": "http://127.0.0.1:7000"}},
+    ]
+    threads = [threading.Thread(target=save, args=(p,)) for p in patches]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    raw = json.loads((tmp_path / "backend.json").read_text(encoding="utf-8"))
+    assert raw["capabilities"]["llm"] == {"url": "http://127.0.0.1:8081", "model": "qwen"}
+    assert raw["capabilities"]["embeddings"] == {"url": "http://127.0.0.1:11434", "model": "nomic"}
+    assert raw["faustus"] == {"url": "http://127.0.0.1:7000"}

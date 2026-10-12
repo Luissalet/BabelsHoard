@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -100,6 +101,10 @@ def _drop_empty(value: Any) -> Any:
     return out
 
 
+# read-merge-write of backend.json is one step: two saves never lose each other's fields
+_SAVE_LOCK = threading.Lock()
+
+
 def save_overrides(data_dir: Path, patch: dict[str, Any]) -> None:
     """Merge ``patch`` into ``backend.json`` (created if missing).
 
@@ -109,16 +114,17 @@ def save_overrides(data_dir: Path, patch: dict[str, Any]) -> None:
     Link uses *before* it replaces the old one, so a bad value raises
     ``ValueError`` and leaves the working configuration untouched.
     """
-    merged = _drop_empty(_deep_merge(_read_raw(data_dir), patch))
-    path = config_path(data_dir)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    try:
-        LinkConfig.load(tmp, env={}, app="check")
-    except ValueError as exc:
-        tmp.unlink()
-        raise ValueError(str(exc).replace(str(tmp), path.name)) from exc
-    os.replace(tmp, path)
+    with _SAVE_LOCK:
+        merged = _drop_empty(_deep_merge(_read_raw(data_dir), patch))
+        path = config_path(data_dir)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        try:
+            LinkConfig.load(tmp, env={}, app="check")
+        except ValueError as exc:
+            tmp.unlink()
+            raise ValueError(str(exc).replace(str(tmp), path.name)) from exc
+        os.replace(tmp, path)
 
 
 def config_for_ui(data_dir: Path) -> dict[str, Any]:
