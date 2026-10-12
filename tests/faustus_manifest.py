@@ -19,6 +19,7 @@ SCHEMA = 1
 TOP_LEVEL_KEYS = {
     "schema", "id", "name", "purpose", "capabilities",
     "app", "mcp", "placeholders", "defaults", "provides", "notes",
+    "x-family",
 }
 APP_KEYS = {"url_default", "ui_url", "health", "identify", "launch_hint"}
 MCP_KEYS = {"transport", "command", "args", "env", "optional_env"}
