@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, Loader2, ShieldCheck, XCircle } from "lucide-react";
 import { api, ApiError } from "./api";
 import { CodeEditor } from "./CodeEditor";
+import { codeFields } from "./copilot-context";
+import { useContextProvider, useCopilotRefresh } from "./hooks";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
 import type { CheckResult, Environment, Finding } from "./types";
@@ -53,6 +55,15 @@ export function CheckPage({ lang }: { lang: Lang }) {
       })
       .catch(() => {});
   }, []);
+
+  // the assistant finished a turn: refresh the environment list only (code, language, choice and result stay)
+  useCopilotRefresh(() => {
+    api.environments().then(setEnvironments).catch(() => {});
+  });
+  useContextProvider(() => {
+    const fields = codeFields(code, SAMPLES[language] ?? "", language, envId, defaultFor(environments, language)?.id ?? "");
+    return { kind: "check-form", object_id: null, dirty: Object.keys(fields).length > 0, fields, ref: { env_id: envId || null } };
+  });
 
   async function run() {
     setBusy(true);

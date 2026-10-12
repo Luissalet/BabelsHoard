@@ -1,5 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { addRefreshHandler, type EditorSnapshot } from "./copilot-context";
 import { detectLang, type Lang } from "./i18n";
+
+/** Reload this view's data in place when the shared assistant finishes a turn (no remount: forms keep what was typed). */
+export function useCopilotRefresh(reload: () => void) {
+  const latest = useRef(reload);
+  latest.current = reload;
+  useEffect(() => addRefreshHandler(() => latest.current()), []);
+}
+
+/** Answer the assistant's "what is open?" request with this form's snapshot (null = nothing to report). */
+export function useContextProvider(snapshot: () => EditorSnapshot | null) {
+  const latest = useRef(snapshot);
+  latest.current = snapshot;
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const detail = (e as CustomEvent<{ provide?: (s: EditorSnapshot) => void }>).detail;
+      try {
+        const s = latest.current();
+        if (s) detail?.provide?.(s);
+      } catch {
+        /* a form that cannot describe itself is simply left out */
+      }
+    };
+    window.addEventListener("babel:context-request", onRequest);
+    return () => window.removeEventListener("babel:context-request", onRequest);
+  }, []);
+}
 
 export type Theme = "light" | "dark" | "system";
 

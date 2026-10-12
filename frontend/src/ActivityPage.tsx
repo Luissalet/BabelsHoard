@@ -1,18 +1,21 @@
 import { useEffect, useState } from "react";
 import { Activity } from "lucide-react";
 import { api } from "./api";
+import { useCopilotRefresh } from "./hooks";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
 import type { AgentCall } from "./types";
 
 export function ActivityPage({ lang }: { lang: Lang }) {
   const [calls, setCalls] = useState<AgentCall[]>([]);
+  const load = () => api.agentCalls(80).then(setCalls).catch(() => {});
+  useCopilotRefresh(load);
 
   useEffect(() => {
-    const load = () => api.agentCalls(80).then(setCalls).catch(() => {});
     load();
     const id = setInterval(load, 4000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (calls.length === 0) {

@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Brain, Layers, RefreshCw } from "lucide-react";
 import { api, ApiError } from "./api";
+import type { ModelsForm } from "./copilot-context";
+import { modelsFields, modelsPatch, rebaseForm } from "./copilot-context";
+import { useContextProvider, useCopilotRefresh } from "./hooks";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
 import type { BackendCapability, BackendConfig, BackendStatus } from "./types";
@@ -49,20 +52,43 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
   const [embedModel, setEmbedModel] = useState("");
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // What the server had when the form was last loaded: a save sends only the fields that differ from it, and a reload
+  // (the assistant finished a turn) updates the fields the user has not touched while keeping the ones being typed.
+  const loaded = useRef<ModelsForm>({ faustusUrl: "", llmUrl: "", llmModel: "", embedUrl: "", embedModel: "" });
+  const draft = useRef<ModelsForm>(loaded.current);
+  draft.current = { faustusUrl, llmUrl, llmModel, embedUrl, embedModel };
+
+  const formOf = (c: BackendConfig): ModelsForm => ({
+    faustusUrl: c.faustus.url ?? "",
+    llmUrl: c.capabilities.llm?.url ?? "",
+    llmModel: c.capabilities.llm?.model ?? "",
+    embedUrl: c.capabilities.embeddings?.url ?? "",
+    embedModel: c.capabilities.embeddings?.model ?? "",
+  });
+
+  const applyConfig = (c: BackendConfig) => {
+    const next = rebaseForm(loaded.current, formOf(c), draft.current);
+    loaded.current = formOf(c);
+    setConfig(c);
+    setFaustusUrl(next.faustusUrl);
+    setLlmUrl(next.llmUrl);
+    setLlmModel(next.llmModel);
+    setEmbedUrl(next.embedUrl);
+    setEmbedModel(next.embedModel);
+  };
 
   const load = () => {
     api.backendStatus().then(setStatus).catch(() => {});
-    api.backendConfigGet().then((c) => {
-      setConfig(c);
-      setFaustusUrl(c.faustus.url ?? "");
-      setLlmUrl(c.capabilities.llm?.url ?? "");
-      setLlmModel(c.capabilities.llm?.model ?? "");
-      setEmbedUrl(c.capabilities.embeddings?.url ?? "");
-      setEmbedModel(c.capabilities.embeddings?.model ?? "");
-    }).catch(() => {});
+    api.backendConfigGet().then(applyConfig).catch(() => {});
   };
 
   useEffect(load, []);
+  useCopilotRefresh(load);
+  useContextProvider(() => {
+    if (!showOverrides) return null;
+    const fields = modelsFields(loaded.current, draft.current, faustusToken !== "");
+    return { kind: "models-form", object_id: null, dirty: Object.keys(fields).length > 0, fields };
+  });
 
   const recheck = () => {
     setChecking(true);
@@ -79,6 +105,8 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
     setSaveError(null);
     try {
       const result = await api.backendConfig(patch);
+      // what was just saved becomes the baseline; anything typed meanwhile in other fields stays
+      loaded.current = { ...loaded.current, ...formOf(result.config) };
       setConfig(result.config);
       setStatus(result.status);
       setFaustusToken("");
@@ -89,14 +117,13 @@ export function ModelsPanel({ lang }: { lang: Lang }) {
     }
   };
 
-  const save = () =>
-    send({
-      faustus: faustusToken ? { url: faustusUrl.trim(), token: faustusToken } : { url: faustusUrl.trim() },
-      capabilities: {
-        llm: { url: llmUrl.trim(), model: llmModel.trim() },
-        embeddings: { url: embedUrl.trim(), model: embedModel.trim() },
-      },
-    });
+  // Only what the user changed is sent, so a value changed elsewhere meanwhile is not overwritten by a stale copy.
+  const save = () => {
+    const patch = modelsPatch(loaded.current, draft.current);
+    if (faustusToken) patch.faustus = { ...patch.faustus, token: faustusToken };
+    if (Object.keys(patch).length === 0) return;
+    return send(patch);
+  };
 
   const forgetToken = () => send({ faustus: { token: "" } });
 

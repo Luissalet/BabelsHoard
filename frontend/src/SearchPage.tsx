@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Loader2, MessageSquareText, Search as SearchIcon, Sparkles } from "lucide-react";
 import { api, ApiError } from "./api";
+import { changedFields } from "./copilot-context";
+import { useContextProvider, useCopilotRefresh } from "./hooks";
 import type { DetailTarget } from "./EntryDetail";
 import { EntryDetail } from "./EntryDetail";
 import type { Lang } from "./i18n";
@@ -80,6 +82,15 @@ export function SearchPage({ lang }: { lang: Lang }) {
   const [asking, setAsking] = useState(false);
   const [askResult, setAskResult] = useState<AskResult | null>(null);
 
+  // bumped when the assistant finishes a turn: reloads the lists and re-runs the search without touching the inputs
+  const [refreshTick, setRefreshTick] = useState(0);
+  useCopilotRefresh(() => setRefreshTick((n) => n + 1));
+  useContextProvider(() => {
+    const fields = changedFields({}, { query, ecosystem, kind, library: libraryFilter, env: envFilter });
+    const typed = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== ""));
+    return { kind: "search-form", object_id: null, dirty: Object.keys(typed).length > 0, fields: typed, ref: { env_id: envFilter || null } };
+  });
+
   useEffect(() => {
     api.libraries().then((libs) => setLibraries(libs.filter((l) => l.status === "done" || l.status === "partial"))).catch(() => {});
     api.environments().then(setEnvironments).catch(() => {});
@@ -88,7 +99,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
       .backendStatus()
       .then((s) => setLlmReason(s.capabilities.llm?.state === "resolved" ? null : s.capabilities.llm?.reason ?? null))
       .catch(() => {});
-  }, []);
+  }, [refreshTick]);
 
   const askTheDocs = () => {
     if (!query.trim()) return;
@@ -137,7 +148,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
       stale = true;
       clearTimeout(handle);
     };
-  }, [query, ecosystem, kind, libraryFilter, envFilter]);
+  }, [query, ecosystem, kind, libraryFilter, envFilter, refreshTick]);
 
   const libraryNames = [...new Set(libraries.map((l) => l.name))].sort();
   const nothingIndexed = libraries.length === 0;
@@ -365,6 +376,7 @@ export function SearchPage({ lang }: { lang: Lang }) {
         <EntryDetail
           target={selected}
           lang={lang}
+          refreshTick={refreshTick}
           onClose={() => setSelected(null)}
           onOpenSymbol={(qualname) =>
             setSelected({ id: qualname, qualname, kind: "symbol", library: null, env_id: selected.env_id })

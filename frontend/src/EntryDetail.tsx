@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Copy, FileCode2, X } from "lucide-react";
 import { api } from "./api";
+import { useContextProvider } from "./hooks";
 import type { Key, Lang } from "./i18n";
 import { kindLabel, t } from "./i18n";
 import { InlineMarkdown, Markdown } from "./Markdown";
@@ -86,23 +87,41 @@ function ParamsTable({ params, lang }: { params: Param[]; lang: Lang }) {
 export function EntryDetail({
   target,
   lang,
+  refreshTick = 0,
   onClose,
   onOpenSymbol,
 }: {
   target: DetailTarget;
   lang: Lang;
+  /** Bumped when the assistant finishes a turn: reloads the entry in place. */
+  refreshTick?: number;
   onClose: () => void;
   onOpenSymbol: (qualname: string) => void;
 }) {
   const [data, setData] = useState<LookupResult | null>(null);
   const [section, setSection] = useState<{ text: string; signature?: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
+  const shownKey = useRef<string | null>(null);
+
+  // The open panel tells the assistant which entry it shows (the id the index uses once it is resolved).
+  useContextProvider(() => ({
+    kind: "entry-detail",
+    object_id: data?.id ?? target.id,
+    dirty: false,
+    fields: {},
+    ref: { qualname: target.qualname, entry_kind: data?.kind ?? target.kind, library: data?.library ?? target.library, env_id: target.env_id },
+  }));
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setData(null);
-    setSection(null);
+    // a reload for the same entry keeps what is on screen until the new data arrives
+    const key = `${target.id}|${target.qualname}|${target.env_id}|${target.kind}`;
+    if (shownKey.current !== key) {
+      shownKey.current = key;
+      setLoading(true);
+      setData(null);
+      setSection(null);
+    }
     async function run() {
       if (target.kind === "section") {
         const r = await api.readEntry(target.id, 0, 20000);
@@ -117,7 +136,7 @@ export function EntryDetail({
     return () => {
       cancelled = true;
     };
-  }, [target.id, target.qualname, target.env_id, target.kind]);
+  }, [target.id, target.qualname, target.env_id, target.kind, refreshTick]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();

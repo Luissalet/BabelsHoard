@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpen, Download, FolderSearch, Globe, Loader2 } from "lucide-react";
 import { api, ApiError } from "./api";
+import { useContextProvider, useCopilotRefresh } from "./hooks";
 import type { Lang } from "./i18n";
 import { t } from "./i18n";
 import type { DocsetCatalogItem, DocsetEntry, Job, Library } from "./types";
@@ -19,6 +20,13 @@ function FolderCard({ lang }: { lang: Lang }) {
   useEffect(() => {
     load();
   }, []);
+  useCopilotRefresh(load);
+  useContextProvider(() => {
+    const fields: Record<string, unknown> = {};
+    if (path.trim()) fields.path = path;
+    if (name.trim()) fields.name = name;
+    return { kind: "folder-form", object_id: null, dirty: Object.keys(fields).length > 0, fields };
+  });
 
   async function indexFolder() {
     if (!path.trim()) return;
@@ -96,6 +104,8 @@ export function DocsetsPage({ lang }: { lang: Lang }) {
   useEffect(() => {
     loadInstalled();
   }, []);
+  useCopilotRefresh(loadInstalled);
+  useContextProvider(() => ({ kind: "docset-search", object_id: null, dirty: query.trim() !== "", fields: query.trim() ? { query } : {} }));
 
   useEffect(() => {
     if (!browsing) return;

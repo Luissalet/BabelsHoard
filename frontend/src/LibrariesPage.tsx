@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FolderPlus, Library as LibraryIcon, Loader2, RefreshCw } from "lucide-react";
 import { api, ApiError } from "./api";
+import { useContextProvider, useCopilotRefresh } from "./hooks";
 import type { Key, Lang } from "./i18n";
 import { t } from "./i18n";
 import type { Environment, InstalledPackage, Job, Library } from "./types";
@@ -103,7 +104,7 @@ function PackageList({ env, lang, onIndexed, refreshKey }: { env: Environment; l
   );
 }
 
-function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onChanged: () => void }) {
+function EnvCard({ env, lang, onChanged, reloadKey }: { env: Environment; lang: Lang; onChanged: () => void; reloadKey: number }) {
   const [libs, setLibs] = useState<Library[]>([]);
   const [showPackages, setShowPackages] = useState(false);
   const [newImport, setNewImport] = useState("");
@@ -117,12 +118,20 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
   const [refreshKey, setRefreshKey] = useState(0);
   const lastMessage = useRef<string | null>(null);
 
+  // what was typed into this environment's "index a library" row, for the assistant's context
+  useContextProvider(() => {
+    const fields: Record<string, unknown> = {};
+    if (newImport.trim()) fields.import_name = newImport;
+    if (ecosystem !== (env.python_path ? "python" : "js")) fields.ecosystem = ecosystem;
+    return { kind: "library-index-form", object_id: env.id, dirty: Object.keys(fields).length > 0, fields };
+  });
+
   const load = () => api.libraries({ env: env.id }).then(setLibs).catch(() => {});
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [env.id]);
+  }, [env.id, reloadKey]);
 
   useEffect(() => {
     if (!job || job.status === "done" || job.status === "error") return;
@@ -249,7 +258,7 @@ function EnvCard({ env, lang, onChanged }: { env: Environment; lang: Lang; onCha
             {showPackages ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             {showPackages ? t(lang, "packages_hide") : t(lang, "packages_show")}
           </button>
-          {showPackages && <PackageList env={env} lang={lang} onIndexed={load} refreshKey={refreshKey} />}
+          {showPackages && <PackageList env={env} lang={lang} onIndexed={load} refreshKey={refreshKey + reloadKey} />}
         </>
       )}
 
@@ -281,10 +290,14 @@ export function LibrariesPage({ lang }: { lang: Lang }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  // the assistant finished a turn: reload environments and their libraries in place (the path being typed stays)
+  const [copilotTick, setCopilotTick] = useState(0);
+  useCopilotRefresh(() => setCopilotTick((n) => n + 1));
+  useContextProvider(() => ({ kind: "environment-new", object_id: null, dirty: path.trim() !== "", fields: path.trim() ? { path } : {} }));
 
   useEffect(() => {
     api.environments().then((envs) => setEnvironments([...envs].reverse())).catch(() => {});
-  }, [refreshTick]);
+  }, [refreshTick, copilotTick]);
 
   async function addEnv() {
     if (!path.trim()) return;
@@ -329,7 +342,7 @@ export function LibrariesPage({ lang }: { lang: Lang }) {
       )}
 
       {environments.map((env) => (
-        <EnvCard key={env.id} env={env} lang={lang} onChanged={() => setRefreshTick((n) => n + 1)} />
+        <EnvCard key={env.id} env={env} lang={lang} reloadKey={copilotTick} onChanged={() => setRefreshTick((n) => n + 1)} />
       ))}
     </div>
   );
