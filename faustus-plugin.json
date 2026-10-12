@@ -26,6 +26,7 @@
     "env": { "BABEL_URL": "{APP_URL}" },
     "optional_env": []
   },
+  "x-family": { "copilot": true },
   "provides": { "skills": ["skills/version-exact-apis/SKILL.md"] },
   "notes": "Local, read-mostly documentation index over the interpreters and node_modules folders you register. Runs on 127.0.0.1 only; the docset catalogue/install features are the only ones that touch the network."
 }
